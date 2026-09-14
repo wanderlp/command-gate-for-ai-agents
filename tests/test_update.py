@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import sys
 import urllib.error
 from pathlib import Path
@@ -305,6 +306,34 @@ def test_find_blocking_processes_parses_tasklist_csv(
         pids = find_blocking_processes(tmp_path / "cgate.exe")
 
     assert pids == [1234, 9012]
+
+
+def test_find_blocking_processes_excludes_onefile_bootloader_parent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """PyInstaller's --onefile bootloader on Windows runs as a parent/child
+    pair sharing the cgate.exe image name: the parent extracts to a temp
+    dir and execs a child to run the actual entry point. `os.getpid()`
+    only ever sees the child, so the parent must be excluded by
+    `os.getppid()` too, or it reads as a second, unrelated cgate process
+    the user is wrongly asked to kill.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(os, "getppid", lambda: 1234)
+    csv = (
+        '"cgate.exe","1234","Console","1","12,345 K"\r\n'  # bootloader parent
+        '"other.exe","5678","Console","1","1,234 K"\r\n'
+        '"cgate.exe","9012","Console","1","9,999 K"\r\n'  # genuinely other
+        "\r\n"
+    )
+    completed = MagicMock()
+    completed.stdout = csv
+    completed.returncode = 0
+
+    with patch("subprocess.run", return_value=completed):
+        pids = find_blocking_processes(tmp_path / "cgate.exe", exclude_pid=4321)
+
+    assert pids == [9012]
 
 
 def test_find_blocking_processes_returns_empty_on_non_windows(

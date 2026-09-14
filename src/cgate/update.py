@@ -442,6 +442,15 @@ def find_blocking_processes(
     the lookup cannot be performed, so the caller can fall back to a manual
     message without crashing. ``exclude_pid`` lets the caller skip its own
     process so an in-place update does not suicide before reporting success.
+
+    Also always excludes ``os.getppid()``: PyInstaller's ``--onefile``
+    bootloader on Windows runs as a parent/child pair under the *same*
+    image name -- the parent extracts to a temp dir, execs a child to run
+    the actual entry point, then waits to clean up once the child exits.
+    ``os.getpid()`` (and thus ``exclude_pid``) only ever sees the child, so
+    without this the parent -- the other half of this very invocation, not
+    a second cgate instance -- would show up as a "blocking process" the
+    user is asked to kill.
     """
     if sys.platform != "win32":
         return []
@@ -456,6 +465,9 @@ def find_blocking_processes(
     except (subprocess.SubprocessError, OSError):
         return []
     target_name = binary_path.name.lower()
+    exclude = {os.getppid()}
+    if exclude_pid is not None:
+        exclude.add(exclude_pid)
     pids: list[int] = []
     for line in completed.stdout.splitlines():
         parts = [part.strip().strip('"') for part in line.split(",")]
@@ -465,7 +477,7 @@ def find_blocking_processes(
             pid = int(parts[1])
         except ValueError:
             continue
-        if exclude_pid is not None and pid == exclude_pid:
+        if pid in exclude:
             continue
         pids.append(pid)
     return pids
