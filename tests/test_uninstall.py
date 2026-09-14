@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -116,10 +117,13 @@ def test_uninstall_no_targets_prints_nothing_to_do(
     assert "Nothing to do" in result.stdout
 
 
-def test_uninstall_binary_handles_permission_error(
-    runner: CliRunner, isolated_env: dict
+def test_uninstall_binary_handles_permission_error_non_windows(
+    runner: CliRunner, isolated_env: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Off Windows there is no self-lock concept, so a PermissionError is a
+    genuine failure and must be reported plainly."""
     binary = isolated_env["binary"]
+    monkeypatch.setattr(sys, "platform", "linux")
 
     real_unlink = Path.unlink
 
@@ -133,8 +137,84 @@ def test_uninstall_binary_handles_permission_error(
 
     assert result.exit_code == 0
     assert "Could not delete binary" in result.stdout
-    assert "Close any running cgate" in result.stdout
     assert binary.exists()
+
+
+def test_uninstall_binary_self_lock_defers_delete_on_windows(
+    runner: CliRunner, isolated_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Windows, a locked binary with no other blocking cgate process is
+    assumed to be locked by this process itself (it always is, since the
+    running exe holds its own image open). Uninstall should hand off to a
+    background delete helper instead of reporting a hard failure -- and the
+    final summary must say so, not print a bare "Uninstall complete."."""
+    binary = isolated_env["binary"]
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        "cgate.cli.uninstall.find_blocking_processes", lambda *a, **k: []
+    )
+    spawned: list[Path] = []
+    monkeypatch.setattr(
+        "cgate.cli.uninstall._spawn_delayed_delete",
+        lambda target: spawned.append(target) or True,
+    )
+
+    real_unlink = Path.unlink
+
+    def fake_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self == binary:
+            raise PermissionError(13, "locked", str(self))
+        real_unlink(self, *args, **kwargs)
+
+    with patch.object(Path, "unlink", fake_unlink):
+        result = runner.invoke(app, ["uninstall", "--binary", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert spawned == [binary]
+    flat_stdout = " ".join(result.stdout.split())
+    assert "will be deleted automatically" in flat_stdout
+    assert "Uninstall complete" in flat_stdout
+    assert binary.exists()  # deletion is done by the (mocked) background helper
+
+
+def test_uninstall_binary_kills_other_blocker_and_retries(
+    runner: CliRunner, isolated_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A different cgate process (not us) holding the lock should be offered
+    for a kill-and-retry, same as `update apply` does, rather than assumed
+    to be our own self-lock."""
+    binary = isolated_env["binary"]
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        "cgate.cli.uninstall.find_blocking_processes", lambda *a, **k: [4321]
+    )
+    monkeypatch.setattr(
+        "cgate.cli.uninstall.find_mcp_serving_pids", lambda pids: []
+    )
+    killed: list[int] = []
+    monkeypatch.setattr(
+        "cgate.cli.uninstall.kill_process",
+        lambda pid: killed.append(pid) or True,
+    )
+    monkeypatch.setattr("cgate.cli.uninstall.time.sleep", lambda _s: None)
+
+    real_unlink = Path.unlink
+    attempts = {"count": 0}
+
+    def fake_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self == binary:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise PermissionError(13, "locked", str(self))
+            return
+        real_unlink(self, *args, **kwargs)
+
+    with patch.object(Path, "unlink", fake_unlink):
+        result = runner.invoke(app, ["uninstall", "--binary", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert killed == [4321]
+    assert attempts["count"] == 2
 
 
 def test_uninstall_binary_skips_when_not_frozen(

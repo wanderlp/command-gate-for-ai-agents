@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -15,7 +19,17 @@ from cgate.core.paths import data_dir, db_path
 from cgate.db.connection import Database, init_database
 from cgate.db.types import Connection
 from cgate.mcp_installer import ClientInstall, detect_clients, is_registered, unregister
-from cgate.update import current_binary_path
+from cgate.update import (
+    current_binary_path,
+    find_blocking_processes,
+    find_mcp_serving_pids,
+    kill_process,
+)
+
+# Brief delay after killing a blocking process so Windows releases the file
+# lock before we retry the delete. Same value `update apply` uses for the
+# analogous kill-and-retry swap (cli/update.py).
+_KILL_SETTLE_SECONDS: float = 1.0
 
 console = Console()
 
@@ -109,17 +123,22 @@ def uninstall_cmd(
     # then binary last (the running program itself). Each helper handles its
     # own "not actionable" state (no clients, missing dir, dev env) so the
     # output stays informative even when one or more scopes are no-ops.
+    mcp_ok = True
+    data_ok = True
+    binary_status = "not_applicable"
     if targets["mcp"]:
-        _uninstall_mcp(mcp_clients, yes)
+        mcp_ok = _uninstall_mcp(mcp_clients, yes)
     if targets["data"]:
-        _uninstall_data(data_path, yes)
+        data_ok = _uninstall_data(data_path, yes)
     if targets["binary"]:
-        _uninstall_binary(binary_path, yes)
+        binary_status = _uninstall_binary(binary_path, yes)
 
     # Only summarise as "Nothing to do" when the user did not request any
-    # specific scope (do_all path) AND none of the scopes were actionable;
-    # otherwise prefer "Uninstall complete" even when individual helpers
-    # reported no-ops, since the user explicitly asked for that work.
+    # specific scope (do_all path) AND none of the scopes were actionable.
+    # Otherwise the summary must reflect what each helper actually
+    # accomplished -- printing "Uninstall complete" regardless of per-step
+    # outcome previously hid real failures (e.g. a locked binary on
+    # Windows) behind a misleading green line.
     explicit_flags = binary or data or mcp
     if (
         not explicit_flags
@@ -128,19 +147,37 @@ def uninstall_cmd(
         and not mcp_actionable
     ):
         console.print("[yellow]Nothing to do.[/yellow]")
+    elif binary_status == "deferred":
+        console.print(
+            "[green]Uninstall complete[/green] [dim](the binary is locked by "
+            "this running process and will be deleted automatically a few "
+            "seconds after it exits -- no further action needed).[/dim]"
+        )
+    elif not mcp_ok or not data_ok or binary_status in ("failed", "skipped"):
+        console.print(
+            "[yellow]Uninstall finished with unresolved steps -- see warnings above.[/yellow]"
+        )
     else:
         console.print("[green]Uninstall complete.[/green]")
 
 
-def _uninstall_mcp(clients: list[ClientInstall], yes: bool) -> None:
+def _uninstall_mcp(clients: list[ClientInstall], yes: bool) -> bool:
+    """Unregister cgate from each detected IA client.
+
+    Returns False if any client was skipped or failed to unregister, so
+    the final summary can report unresolved steps instead of a blanket
+    "Uninstall complete.".
+    """
     if not clients:
         console.print("  [dim]No MCP clients to unregister.[/dim]")
-        return
+        return True
+    all_ok = True
     for client in clients:
         if not yes and not typer.confirm(
             f"Unregister from {client.label}?", default=True
         ):
             console.print(f"  [dim]Skipped {client.label}.[/dim]")
+            all_ok = False
             continue
         try:
             _ = unregister(client)
@@ -149,18 +186,27 @@ def _uninstall_mcp(clients: list[ClientInstall], yes: bool) -> None:
             console.print(
                 f"  [red]Failed to unregister {client.label}:[/red] {exc}"
             )
+            all_ok = False
+    return all_ok
 
 
-def _uninstall_data(data_path: Path, yes: bool) -> None:
+def _uninstall_data(data_path: Path, yes: bool) -> bool:
+    """Remove the data directory, including keyring entries for its connections.
+
+    Returns False on skip or any failure, so the final summary can report
+    unresolved steps instead of a blanket "Uninstall complete.".
+    """
     if not data_path.exists():
         console.print(f"  [dim]{data_path} already gone.[/dim]")
-        return
+        return True
 
     if not yes and not typer.confirm(
         f"Delete data directory {data_path}?", default=False
     ):
         console.print("  [dim]Skipped.[/dim]")
-        return
+        return False
+
+    ok = True
 
     # Enumerate connections first so we can clean each connection's
     # OS keyring entry before the DB row that names it disappears.
@@ -173,6 +219,7 @@ def _uninstall_data(data_path: Path, yes: bool) -> None:
         console.print(
             f"  [yellow]Could not enumerate connections:[/yellow] {exc}"
         )
+        ok = False
 
     for conn in connections:
         try:
@@ -182,41 +229,127 @@ def _uninstall_data(data_path: Path, yes: bool) -> None:
             console.print(
                 f"  [yellow]Could not remove keyring for {conn.alias}:[/yellow] {exc}"
             )
+            ok = False
 
     try:
         shutil.rmtree(data_path)
         console.print(f"  Removed [bold]{data_path}[/bold].")
     except OSError as exc:
         console.print(f"  [red]Failed to remove {data_path}:[/red] {exc}")
+        ok = False
+
+    return ok
 
 
-def _uninstall_binary(binary_path: Path | None, yes: bool) -> None:
+def _uninstall_binary(binary_path: Path | None, yes: bool) -> str:
+    """Delete the cgate binary.
+
+    Returns one of "removed", "deferred", "skipped", "already_gone",
+    "not_applicable", or "failed" so the caller can print an honest final
+    summary instead of a blanket "Uninstall complete" regardless of outcome.
+    """
     if binary_path is None:
         console.print(
             "  [dim]Not running from a PyInstaller binary; nothing to remove.[/dim]"
         )
-        return
+        return "not_applicable"
     if not binary_path.exists():
         console.print(f"  [dim]{binary_path} already gone.[/dim]")
-        return
+        return "already_gone"
 
     if not yes and not typer.confirm(
         f"Delete binary at {binary_path}?", default=False
     ):
         console.print("  [dim]Skipped.[/dim]")
-        return
+        return "skipped"
 
     try:
         binary_path.unlink()
         console.print(f"  Removed [bold]{binary_path}[/bold].")
-    except PermissionError as exc:
-        # Windows holds an open-file lock on the running executable, so a
-        # in-process unlink fails with EACCES. The user must close cgate
-        # first and re-run, or delete the file by hand.
-        console.print(f"  [yellow]Could not delete binary:[/yellow] {exc}")
-        console.print(
-            "  [dim]Close any running cgate process and re-run "
-            "`cgate uninstall --binary`, or delete the file manually.[/dim]"
-        )
+        return "removed"
     except OSError as exc:
-        console.print(f"  [red]Could not delete binary:[/red] {exc}")
+        if sys.platform != "win32":
+            console.print(f"  [red]Could not delete binary:[/red] {exc}")
+            return "failed"
+
+    # Windows only, direct unlink failed above. The running cgate.exe always
+    # holds a lock on its own image file while executing, so this is the
+    # expected case, not a genuine error -- the exact self-lock problem
+    # `update apply` already solves in cli/update.py. Reuse its blocker
+    # detection instead of guessing whether the lock is us or someone else.
+    self_pid = os.getpid()
+    other_blockers = find_blocking_processes(binary_path, exclude_pid=self_pid)
+
+    if other_blockers:
+        pid_list = ", ".join(str(pid) for pid in other_blockers)
+        console.print(
+            f"  [yellow]Other running cgate processes are blocking the "
+            f"delete:[/yellow] PID(s) {pid_list}"
+        )
+        mcp_pids = find_mcp_serving_pids(other_blockers)
+        if mcp_pids:
+            console.print(
+                "  [red]One of them appears to be serving a live MCP "
+                "session for an IA client (Claude Code / opencode / "
+                "Cursor). Killing it disconnects that session "
+                "immediately.[/red]"
+            )
+        proceed = yes or typer.confirm(
+            "  Kill blocking process(es) and retry?", default=False
+        )
+        if not proceed:
+            console.print(
+                "  [dim]Skipped. Close those processes and re-run "
+                "`cgate uninstall --binary` to finish.[/dim]"
+            )
+            return "skipped"
+        if any(kill_process(pid) for pid in other_blockers):
+            time.sleep(_KILL_SETTLE_SECONDS)
+        try:
+            binary_path.unlink()
+            console.print(f"  Removed [bold]{binary_path}[/bold].")
+            return "removed"
+        except OSError:
+            pass  # still locked (likely by us) -- fall through below
+
+    if _spawn_delayed_delete(binary_path):
+        console.print(
+            f"  [yellow]{binary_path}[/yellow] is locked by this running "
+            "process. It will be deleted automatically a few seconds "
+            "after this command exits -- no further action needed."
+        )
+        return "deferred"
+
+    console.print(
+        "  [red]Could not delete binary:[/red] locked by this running "
+        "process, and the background delete helper failed to start."
+    )
+    console.print(f'  [dim]Close cgate and delete manually: del "{binary_path}"[/dim]')
+    return "failed"
+
+
+def _spawn_delayed_delete(target: Path) -> bool:
+    """Spawn a detached helper that deletes ``target`` a few seconds after this process exits.
+
+    Windows only -- mirrors ``_spawn_delayed_swap`` in cli/update.py, which
+    solves the identical self-lock problem for ``update apply``. ``cmd.exe``
+    is not ``cgate.exe`` so it never holds the lock our own process does;
+    the ``ping`` burns ~4s so our handle on the file is guaranteed closed
+    (process exited) by the time ``del`` runs.
+    """
+    try:
+        cmd_str = f'ping -n 5 127.0.0.1 > nul & del /F /Q "{target}"'
+        subprocess.Popen(
+            f'cmd.exe /c "{cmd_str}"',
+            # DETACHED_PROCESS | CREATE_NO_WINDOW, same combination
+            # cli/update.py uses and for the same reason: detach from our
+            # console AND suppress the window Windows would otherwise
+            # flash for cmd.exe/ping.exe.
+            creationflags=0x00000008 | 0x08000000,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return True
