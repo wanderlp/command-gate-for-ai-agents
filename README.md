@@ -45,3 +45,7 @@ agent.
 
 Package-manager installs, architecture, development setup, and building from source
 live in [TECHNICAL.md](./TECHNICAL.md).
+
+## License
+
+[MIT](./LICENSE)
