@@ -83,8 +83,9 @@ Run `cgate update apply` to install.
 
 Phase 1 complete: end-to-end propose → approve → execute → audit loop working,
 plus a round of security/robustness hardening (host key verification, TLS
-validation, DB race-condition fixes, and more).
-183 unit/integration tests pass; ruff + basedpyright pass with a handful of
+validation, DB race-condition fixes, GitHub Actions build-provenance
+attestation verification on self-update, and more).
+201 unit/integration tests pass; ruff + basedpyright pass with a handful of
 accepted pre-existing findings (no known bugs, just style/complexity debt).
 
 ## Development

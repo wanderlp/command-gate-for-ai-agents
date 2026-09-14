@@ -11,9 +11,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from http import HTTPStatus
 from packaging.version import InvalidVersion, Version
 from pathlib import Path
-from typing import Final, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Final, NotRequired, TypedDict
+
+if TYPE_CHECKING:
+    from sigstore.verify import Verifier
+    from sigstore.verify.policy import VerificationPolicy
 
 DEFAULT_REPO: Final = "wanderlp/command-gate"
 GITHUB_API: Final = "https://api.github.com"
@@ -226,6 +231,159 @@ def download_to(asset: Asset, dest: Path) -> None:
     finally:
         if not committed:
             temporary.unlink(missing_ok=True)
+
+
+GITHUB_OIDC_ISSUER: Final = "https://token.actions.githubusercontent.com"
+_SLSA_PROVENANCE_PREDICATE: Final = "https://slsa.dev/provenance/v1"
+
+
+def _fetch_attestations(asset: Asset, repo: str) -> list[dict[str, object]]:
+    """Fetch the raw attestation entries GitHub has for ``asset.digest``.
+
+    Raises ``UpdateError`` if there is no digest to look up, the request
+    fails, or GitHub reports no attestation for this digest -- via a bare
+    404 (no JSON body) for a digest nothing was ever attested for, or an
+    empty ``attestations`` list, which the API does not use today but
+    which costs nothing to also treat as "none found".
+    """
+    if not asset.digest:
+        msg = f"cannot verify authenticity: release did not report a digest for {asset.name}"
+        raise UpdateError(msg)
+
+    url = f"{GITHUB_API}/repos/{repo}/attestations/{asset.digest}"
+    request = urllib.request.Request(  # noqa: S310 -- URL is fixed to the HTTPS GitHub API.
+        url, headers={"Accept": "application/vnd.github+json"}
+    )
+    not_found_msg = (
+        f"no build-provenance attestation found for {asset.name} "
+        f"(digest {asset.digest}) -- refusing to install an unverifiable binary"
+    )
+    try:
+        with urllib.request.urlopen(  # noqa: S310 -- Request contains an HTTPS URL.
+            request, timeout=REQUEST_TIMEOUT
+        ) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == HTTPStatus.NOT_FOUND:
+            raise UpdateError(not_found_msg) from exc
+        msg = f"failed to fetch attestation for {asset.name}: {exc}"
+        raise UpdateError(msg) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        msg = f"failed to fetch attestation for {asset.name}: {exc}"
+        raise UpdateError(msg) from exc
+
+    try:
+        data = json.loads(payload)
+        attestations = data.get("attestations", [])
+    except (json.JSONDecodeError, AttributeError) as exc:
+        msg = f"malformed attestation response for {asset.name}: {exc}"
+        raise UpdateError(msg) from exc
+
+    if not attestations:
+        raise UpdateError(not_found_msg)
+    return attestations
+
+
+def _matches_attested_subject(
+    entry: dict[str, object],
+    *,
+    identity_policy: VerificationPolicy,
+    verifier: Verifier,
+    expected_digest: str,
+) -> str | None:
+    """Verify one attestation entry against ``identity_policy``.
+
+    Returns ``None`` on a fully matching, verified entry, or a
+    human-readable reason it didn't match otherwise -- never raises, so
+    the caller can try every entry and report all the reasons together.
+    """
+    from sigstore.errors import VerificationError  # noqa: PLC0415
+    from sigstore.models import Bundle  # noqa: PLC0415
+
+    try:
+        bundle = Bundle.from_json(json.dumps(entry["bundle"]))
+        _, raw_statement = verifier.verify_dsse(bundle, identity_policy)
+        statement = json.loads(raw_statement)
+    except (KeyError, TypeError, ValueError, VerificationError) as exc:
+        return str(exc)
+    if statement.get("predicateType") != _SLSA_PROVENANCE_PREDICATE:
+        return f"unexpected predicateType: {statement.get('predicateType')}"
+    subjects = statement.get("subject", [])
+    if any(subject.get("digest", {}).get("sha256") == expected_digest for subject in subjects):
+        return None
+    return "attested subject digest does not match the downloaded asset"
+
+
+def verify_attestation(asset: Asset, release: Release, *, repo: str = DEFAULT_REPO) -> None:
+    """Verify the downloaded asset's GitHub Actions build-provenance attestation.
+
+    ``download_to`` already checks ``asset.digest`` against the downloaded
+    bytes, but that digest comes from the same Release API response as the
+    download URL itself -- it only proves the bytes were not corrupted or
+    substituted in transit, not that they came from our own release
+    workflow (issue #4). This additionally requires a Sigstore-signed
+    attestation, issued by GitHub's OIDC provider to *this* repo's release
+    workflow at *this exact tag* (the ``attest-build-provenance`` step in
+    ``release.yml``), whose signed subject digest matches ``asset.digest``.
+
+    Uses the bundled Sigstore trust root (``offline=True``) rather than
+    fetching current root metadata via TUF on every update check: this
+    avoids adding a second live trust dependency to the update path, at
+    the cost of needing a ``sigstore`` package upgrade if Sigstore ever
+    rotates its root keys (rare and well-announced).
+
+    Fail-closed, intentionally with no bypass flag (same posture as the
+    download host allow-list, issue #14): raises ``UpdateError`` if the
+    digest is missing, no attestation exists, the signature/identity does
+    not check out, or the attested subject does not match this asset.
+    """
+    # Deferred: sigstore pulls in tuf/cryptography and costs ~0.6s to
+    # import. cli/update.py is loaded on every `cgate` invocation (it's
+    # registered as a sub-app in main()), so a top-level import here would
+    # tax every command, not just `update apply`.
+    import logging  # noqa: PLC0415
+
+    from sigstore.verify import Verifier  # noqa: PLC0415
+    from sigstore.verify import policy as verify_policy  # noqa: PLC0415
+
+    attestations = _fetch_attestations(asset, repo)
+
+    # The warning is expected and permanent given `offline=True` below; it
+    # would otherwise print an unstyled line to stderr on every `apply` via
+    # Python's handler-less-root lastResort handler.
+    logging.getLogger("sigstore").setLevel(logging.ERROR)
+
+    identity_policy = verify_policy.AllOf(
+        [
+            verify_policy.OIDCIssuer(GITHUB_OIDC_ISSUER),
+            verify_policy.GitHubWorkflowRepository(repo),
+            verify_policy.GitHubWorkflowRef(f"refs/tags/{release.tag}"),
+        ]
+    )
+    verifier = Verifier.production(offline=True)
+    expected_digest = asset.digest.removeprefix("sha256:")
+
+    errors = [
+        reason
+        for entry in attestations
+        if (
+            reason := _matches_attested_subject(
+                entry,
+                identity_policy=identity_policy,
+                verifier=verifier,
+                expected_digest=expected_digest,
+            )
+        )
+        is not None
+    ]
+    if len(errors) < len(attestations):
+        return  # at least one entry matched
+
+    msg = (
+        f"could not verify a build-provenance attestation for {asset.name} against "
+        f"{repo}@refs/tags/{release.tag}: {'; '.join(errors) or 'no valid attestation'}"
+    )
+    raise UpdateError(msg)
 
 
 def replace_binary(new_path: Path, target: Path) -> str | None:

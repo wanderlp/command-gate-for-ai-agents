@@ -62,6 +62,10 @@ def _mock_update_available(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     )
     monkeypatch.setattr("cgate.cli.update.current_binary_path", lambda: tmp_path / "cgate.exe")
     monkeypatch.setattr("cgate.cli.update.download_to", lambda _asset, _dest: None)
+    # issue #4's attestation check is exercised separately in
+    # tests/test_update.py; these tests care about the blocker/MCP branching
+    # that runs after it, so treat it as already-verified.
+    monkeypatch.setattr("cgate.cli.update.verify_attestation", lambda _asset, _release: None)
     # Accept the new ``exclude_pid`` kwarg added by issue #19's fix.
     monkeypatch.setattr(
         "cgate.cli.update.find_blocking_processes",
@@ -128,6 +132,7 @@ def test_apply_cleans_up_previous_snapshot_when_swap_never_happens(
     )
     monkeypatch.setattr("cgate.cli.update.current_binary_path", lambda: binary)
     monkeypatch.setattr("cgate.cli.update.download_to", lambda _asset, _dest: None)
+    monkeypatch.setattr("cgate.cli.update.verify_attestation", lambda _asset, _release: None)
     monkeypatch.setattr("cgate.cli.update.replace_binary", lambda _staging, _target: "locked")
     # issue #19: find_blocking_processes now takes ``exclude_pid``.
     monkeypatch.setattr(
@@ -267,6 +272,7 @@ def test_apply_cleans_up_staged_files_on_uncaught_exception(
     )
     monkeypatch.setattr("cgate.cli.update.current_binary_path", lambda: binary)
     monkeypatch.setattr("cgate.cli.update.download_to", lambda _a, _d: None)
+    monkeypatch.setattr("cgate.cli.update.verify_attestation", lambda _asset, _release: None)
 
     def _boom(_staging: Path, _target: Path) -> str | None:
         raise RuntimeError(_UNCAUGHT_SWAP_FAILURE_MSG)

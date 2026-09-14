@@ -25,11 +25,31 @@ from cgate.update import (
     kill_process,
     replace_binary,
     select_asset,
+    verify_attestation,
 )
+
+_ATTESTATION_FIXTURE = Path(__file__).parent / "fixtures" / "attestation_response.json"
+# Matches the digest/tag/name baked into the fixture -- a real attestation
+# response captured from wanderlp/command-gate's v0.1.14 release, so
+# verification below exercises the actual Sigstore/Fulcio/Rekor chain,
+# not a hand-rolled fake bundle.
+_FIXTURE_DIGEST = "sha256:d570f75ae23b08c8b3a3a4c2e98d71964c703d9ea04473bbffb3225c86da30ee"
+_FIXTURE_TAG = "v0.1.14"
+_FIXTURE_ASSET_NAME = "cgate-windows-amd64.exe"
 
 
 def _sha256_digest(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _attestation_response_bytes() -> bytes:
+    return _ATTESTATION_FIXTURE.read_bytes()
+
+
+def _mock_attestation_urlopen(body: bytes) -> MagicMock:
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = body
+    return response
 
 
 def test_parse_release_extracts_assets_and_version() -> None:
@@ -444,3 +464,116 @@ def test_platform_suffix_returns_windows_for_win32(
     monkeypatch.setattr(sys, "platform", "win32")
 
     assert _platform_suffix() == "windows-amd64.exe"
+
+
+# --- issue #4: build-provenance attestation verification ---
+
+
+def test_verify_attestation_accepts_a_real_matching_bundle() -> None:
+    """End-to-end against a real captured GitHub attestation response: the
+    Sigstore/Fulcio/Rekor verification itself, plus the identity policy
+    (repo + workflow ref) and subject-digest match, must all pass."""
+    asset = Asset(_FIXTURE_ASSET_NAME, "https://x/bin", 1, _FIXTURE_DIGEST)
+    release = Release(tag=_FIXTURE_TAG, version="0.1.14", html_url="https://x", assets=())
+    response = _mock_attestation_urlopen(_attestation_response_bytes())
+
+    with patch("urllib.request.urlopen", return_value=response):
+        verify_attestation(asset, release)  # must not raise
+
+
+def test_verify_attestation_rejects_a_digest_the_bundle_does_not_attest() -> None:
+    """A digest that doesn't match any subject in the (validly-signed) bundle
+    must still be rejected -- the signature alone isn't enough, it has to be
+    a signature over *this* asset."""
+    asset = Asset(_FIXTURE_ASSET_NAME, "https://x/bin", 1, "sha256:" + ("0" * 64))
+    release = Release(tag=_FIXTURE_TAG, version="0.1.14", html_url="https://x", assets=())
+    response = _mock_attestation_urlopen(_attestation_response_bytes())
+
+    with (
+        patch("urllib.request.urlopen", return_value=response),
+        pytest.raises(UpdateError, match="could not verify"),
+    ):
+        verify_attestation(asset, release)
+
+
+def test_verify_attestation_rejects_a_ref_the_certificate_was_not_issued_for() -> None:
+    """The identity policy must pin the exact release tag: a real, validly
+    signed bundle for a *different* tag than the one we're installing must
+    not verify -- otherwise an attacker who ever obtained one legitimate
+    attestation could replay it for an unrelated release."""
+    asset = Asset(_FIXTURE_ASSET_NAME, "https://x/bin", 1, _FIXTURE_DIGEST)
+    release = Release(tag="v9.9.9", version="9.9.9", html_url="https://x", assets=())
+    response = _mock_attestation_urlopen(_attestation_response_bytes())
+
+    with (
+        patch("urllib.request.urlopen", return_value=response),
+        pytest.raises(UpdateError, match="could not verify"),
+    ):
+        verify_attestation(asset, release)
+
+
+def test_verify_attestation_rejects_a_repository_the_certificate_was_not_issued_for() -> None:
+    asset = Asset(_FIXTURE_ASSET_NAME, "https://x/bin", 1, _FIXTURE_DIGEST)
+    release = Release(tag=_FIXTURE_TAG, version="0.1.14", html_url="https://x", assets=())
+    response = _mock_attestation_urlopen(_attestation_response_bytes())
+
+    with (
+        patch("urllib.request.urlopen", return_value=response),
+        pytest.raises(UpdateError, match="could not verify"),
+    ):
+        verify_attestation(asset, release, repo="attacker/evil-fork")
+
+
+def test_verify_attestation_refuses_when_release_reports_no_digest() -> None:
+    """No digest means nothing to look up an attestation for -- fail closed
+    without making a network call, same posture as a missing/failed sha256
+    check in `download_to`."""
+    asset = Asset(_FIXTURE_ASSET_NAME, "https://x/bin", 1, "")
+    release = Release(tag=_FIXTURE_TAG, version="0.1.14", html_url="https://x", assets=())
+
+    with (
+        patch("urllib.request.urlopen") as urlopen,
+        pytest.raises(UpdateError, match="did not report a digest"),
+    ):
+        verify_attestation(asset, release)
+
+    urlopen.assert_not_called()
+
+
+def test_verify_attestation_raises_when_no_attestation_exists() -> None:
+    asset = Asset(_FIXTURE_ASSET_NAME, "https://x/bin", 1, _FIXTURE_DIGEST)
+    release = Release(tag=_FIXTURE_TAG, version="0.1.14", html_url="https://x", assets=())
+    response = _mock_attestation_urlopen(json.dumps({"attestations": []}).encode())
+
+    with (
+        patch("urllib.request.urlopen", return_value=response),
+        pytest.raises(UpdateError, match="no build-provenance attestation found"),
+    ):
+        verify_attestation(asset, release)
+
+
+def test_verify_attestation_raises_a_specific_message_when_github_returns_404() -> None:
+    """GitHub answers with a bare 404 (no JSON body), not an empty
+    `attestations` list, when nothing was ever attested for a digest --
+    verified against the real API while building this feature."""
+    asset = Asset(_FIXTURE_ASSET_NAME, "https://x/bin", 1, _FIXTURE_DIGEST)
+    release = Release(tag=_FIXTURE_TAG, version="0.1.14", html_url="https://x", assets=())
+    error = urllib.error.HTTPError("https://example.test", 404, "Not Found", hdrs=None, fp=None)
+
+    with (
+        patch("urllib.request.urlopen", side_effect=error),
+        pytest.raises(UpdateError, match="no build-provenance attestation found"),
+    ):
+        verify_attestation(asset, release)
+
+
+def test_verify_attestation_raises_update_error_on_network_failure() -> None:
+    asset = Asset(_FIXTURE_ASSET_NAME, "https://x/bin", 1, _FIXTURE_DIGEST)
+    release = Release(tag=_FIXTURE_TAG, version="0.1.14", html_url="https://x", assets=())
+    error = urllib.error.HTTPError("https://example.test", 500, "server error", hdrs=None, fp=None)
+
+    with (
+        patch("urllib.request.urlopen", side_effect=error),
+        pytest.raises(UpdateError, match="failed to fetch attestation"),
+    ):
+        verify_attestation(asset, release)
