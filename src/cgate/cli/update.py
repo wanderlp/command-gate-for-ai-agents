@@ -27,10 +27,13 @@ from cgate.update import (
     kill_process,
     replace_binary,
     select_asset,
+    verify_attestation,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from cgate.update import Asset
 
 update_app = typer.Typer(help="Check for and apply updates from GitHub Releases.")
 console = Console()
@@ -65,6 +68,38 @@ def check_cmd() -> None:
         f"[yellow]Update available: {__version__} -> {release.version}[/yellow]"
     )
     console.print("Run [bold]cgate update apply[/bold] to install.")
+
+
+def _download_and_verify(asset: Asset, release: Release, staging: Path) -> None:
+    """Download the release asset and verify its build-provenance attestation.
+
+    Split out of ``apply_cmd`` to keep its branch/statement count from
+    growing further -- the attestation check (issue #4) adds a second
+    verification step on top of the existing digest check in
+    ``download_to``, same reasoning that pulled out
+    ``_attempt_swap_with_recovery`` during the reopen-issues pass. Raises
+    ``typer.Exit(code=3)`` on either failure; a failed attestation also
+    wipes ``staging`` so a rejected binary isn't left on disk.
+    """
+    console.print(f"Downloading {asset.name} ({asset.size / 1024 / 1024:.1f} MB)...")
+    try:
+        download_to(asset, staging)
+    except UpdateError as exc:
+        console.print(f"[red]Download failed:[/red] {exc}")
+        raise typer.Exit(code=3) from exc
+
+    console.print("Verifying build provenance attestation...")
+    try:
+        verify_attestation(asset, release)
+    except UpdateError as exc:
+        console.print(f"[red]Attestation verification failed:[/red] {exc}")
+        console.print(
+            "[dim]Refusing to install a binary that cannot be verified as "
+            f"coming from our release workflow. See {release.html_url} to "
+            "inspect the release manually.[/dim]"
+        )
+        _safe_unlink(staging)
+        raise typer.Exit(code=3) from exc
 
 
 @update_app.command("apply")
@@ -143,14 +178,7 @@ def apply_cmd(
         console.print(message)
         raise typer.Exit(code=2)
 
-    console.print(
-        f"Downloading {asset.name} ({asset.size / 1024 / 1024:.1f} MB)..."
-    )
-    try:
-        download_to(asset, staging)
-    except UpdateError as exc:
-        console.print(f"[red]Download failed:[/red] {exc}")
-        raise typer.Exit(code=3) from exc
+    _download_and_verify(asset, release, staging)
 
     # Read the running binary to a `.previous` rollback slot before the swap
     # so a bad release can be reverted with a single rename. Copy (not move)
