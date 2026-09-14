@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from cgate.connections.auth import (
+    get_credential,
     is_kerberos_available,
     remove_credential,
     store_credential,
@@ -157,21 +158,52 @@ def remove(alias: str) -> None:
         raise typer.Exit(code=1)
 
     # Remove the keyring credential BEFORE the DB row (issue #5). If the
-    # keyring backend is unavailable -- common on headless Linux, and not
-    # every backend failure is a keyring.errors.KeyringError subclass --
-    # aborting here leaves the connection intact and reusable instead of
-    # deleting the DB row and orphaning a credential no connection can
-    # ever reference again.
+    # keyring backend is unavailable -- common on headless Linux, where
+    # keyring.errors.NoKeyringError is raised -- aborting here leaves the
+    # connection intact and reusable instead of deleting the DB row and
+    # orphaning a credential no connection can ever reference again.
+    #
+    # Three cases to distinguish:
+    # 1. No credential was ever stored (kerberos-mode adds store none,
+    #    or the keyring was down at add time, etc.). Removing the DB row
+    #    is safe -- there is nothing in the keyring to orphan.
+    # 2. A credential exists. Removal must succeed; otherwise we'd
+    #    orphan it. `remove_credential` swallows `KeyringError` (incl.
+    #    `NoKeyringError`) and returns False -- so we must check the
+    #    bool, since the `except Exception` below never sees that case.
+    # 3. We can't even read the keyring (backend unavailable). We can't
+    #    tell whether case 1 or 2 applies, so conservatively abort.
     try:
-        _ = remove_credential(alias)
+        existing = get_credential(alias)
     except Exception as exc:
         console.print(
-            f"[red]Could not remove the stored credential for '{alias}' from "
-            f"the OS keyring:[/red] {exc}\n"
-            "[dim]The connection was NOT removed. Fix the keyring backend and "
-            "retry, or remove the credential manually first.[/dim]"
+            f"[red]Could not read the stored credential for '{alias}' "
+            f"from the OS keyring:[/red] {exc}\n"
+            "[dim]The connection was NOT removed. Fix the keyring backend "
+            "and retry, or remove the credential manually first.[/dim]"
         )
         raise typer.Exit(code=1) from exc
+    if existing is not None:
+        try:
+            keyring_removed = remove_credential(alias)
+        except Exception as exc:
+            console.print(
+                f"[red]Could not remove the stored credential for '{alias}' "
+                f"from the OS keyring:[/red] {exc}\n"
+                "[dim]The connection was NOT removed. Fix the keyring backend "
+                "and retry, or remove the credential manually first.[/dim]"
+            )
+            raise typer.Exit(code=1) from exc
+        if not keyring_removed:
+            console.print(
+                f"[red]Could not remove the stored credential for '{alias}' "
+                f"from the OS keyring.[/red]\n"
+                "[dim]The keyring backend is unavailable (common on headless "
+                "Linux, where no backend is registered with the `keyring` "
+                "library); the connection was NOT removed. Fix the keyring "
+                "backend or remove the credential manually first, then retry.[/dim]"
+            )
+            raise typer.Exit(code=1) from None
 
     removed = repo.remove(alias)
     if not removed:
