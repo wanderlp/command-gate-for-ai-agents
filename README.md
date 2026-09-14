@@ -1,6 +1,6 @@
-# command-gate (`cgate`)
+# command-gate-for-ai-agents (`cgate`)
 
-`command-gate` is middleware and a CLI between AI assistants and managed servers: AI
+`command-gate-for-ai-agents` is middleware and a CLI between AI agents and managed servers: AI
 proposes commands, a human decides what runs, and the tool records what ran, where, why,
 and with what result.
 
