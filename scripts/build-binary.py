@@ -17,6 +17,7 @@ from typing import Final
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 DIST_DIR: Final = PROJECT_ROOT / "dist"
 ENSURE_VERSION_SCRIPT: Final = PROJECT_ROOT / "scripts" / "_ensure_version.py"
+ENSURE_REPO_SCRIPT: Final = PROJECT_ROOT / "scripts" / "_ensure_repo.py"
 
 
 def main() -> int:
@@ -81,6 +82,14 @@ def main() -> int:
         )
         if version_step.returncode != 0:
             return version_step.returncode
+
+        repo_step = subprocess.run(
+            [sys.executable, str(ENSURE_REPO_SCRIPT)],
+            cwd=PROJECT_ROOT,
+            check=False,
+        )
+        if repo_step.returncode != 0:
+            return repo_step.returncode
 
         completed = subprocess.run(command, cwd=PROJECT_ROOT, check=False)
         if completed.returncode != 0:

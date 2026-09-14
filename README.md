@@ -10,7 +10,7 @@ and with what result.
 
 ### Windows
 
-1. Download `cgate-windows-amd64.exe` from the [latest release](https://github.com/wanderlp/command-gate/releases/latest).
+1. Download `cgate-windows-amd64.exe` from the [latest release](https://github.com/wanderlp/command-gate-for-ai-agents/releases/latest).
 2. Move it somewhere on your `PATH` (e.g., `C:\Users\<you>\bin\`).
 3. From any shell:
 
@@ -26,7 +26,7 @@ and with what result.
 ### macOS / Linux
 
 Same flow — download `cgate-macos-arm64` or `cgate-linux-x86_64` from the
-[latest release](https://github.com/wanderlp/command-gate/releases/latest),
+[latest release](https://github.com/wanderlp/command-gate-for-ai-agents/releases/latest),
 `chmod +x` it, move it to `~/.local/bin` or another `PATH` directory.
 
 ### Via package manager
@@ -91,8 +91,8 @@ accepted pre-existing findings (no known bugs, just style/complexity debt).
 ## Development
 
 ```console
-git clone https://github.com/wanderlp/command-gate.git
-cd command-gate
+git clone https://github.com/wanderlp/command-gate-for-ai-agents.git
+cd command-gate-for-ai-agents
 uv sync --extra dev
 uv run cgate --version
 uv run pytest

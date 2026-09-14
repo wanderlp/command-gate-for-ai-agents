@@ -36,6 +36,12 @@ _ATTESTATION_FIXTURE = Path(__file__).parent / "fixtures" / "attestation_respons
 _FIXTURE_DIGEST = "sha256:d570f75ae23b08c8b3a3a4c2e98d71964c703d9ea04473bbffb3225c86da30ee"
 _FIXTURE_TAG = "v0.1.14"
 _FIXTURE_ASSET_NAME = "cgate-windows-amd64.exe"
+# The repo the fixture's certificate was actually issued for -- captured
+# before the wanderlp/command-gate -> wanderlp/command-gate-for-ai-agents
+# rename. A Fulcio cert's identity is fixed at issuance, so this fixture
+# stays pinned to the old name regardless of what DEFAULT_REPO becomes;
+# these tests pass it explicitly rather than relying on the default.
+_FIXTURE_REPO = "wanderlp/command-gate"
 
 
 def _sha256_digest(data: bytes) -> str:
@@ -478,7 +484,7 @@ def test_verify_attestation_accepts_a_real_matching_bundle() -> None:
     response = _mock_attestation_urlopen(_attestation_response_bytes())
 
     with patch("urllib.request.urlopen", return_value=response):
-        verify_attestation(asset, release)  # must not raise
+        verify_attestation(asset, release, repo=_FIXTURE_REPO)  # must not raise
 
 
 def test_verify_attestation_rejects_a_digest_the_bundle_does_not_attest() -> None:
@@ -493,7 +499,7 @@ def test_verify_attestation_rejects_a_digest_the_bundle_does_not_attest() -> Non
         patch("urllib.request.urlopen", return_value=response),
         pytest.raises(UpdateError, match="could not verify"),
     ):
-        verify_attestation(asset, release)
+        verify_attestation(asset, release, repo=_FIXTURE_REPO)
 
 
 def test_verify_attestation_rejects_a_ref_the_certificate_was_not_issued_for() -> None:
@@ -509,7 +515,7 @@ def test_verify_attestation_rejects_a_ref_the_certificate_was_not_issued_for() -
         patch("urllib.request.urlopen", return_value=response),
         pytest.raises(UpdateError, match="could not verify"),
     ):
-        verify_attestation(asset, release)
+        verify_attestation(asset, release, repo=_FIXTURE_REPO)
 
 
 def test_verify_attestation_rejects_a_repository_the_certificate_was_not_issued_for() -> None:
