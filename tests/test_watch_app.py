@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -117,3 +118,28 @@ def test_reject_all_resolves_the_active_batch(repos: Repos) -> None:
     resolved = repos.batches.get(lot.id)
     assert resolved is not None
     assert resolved.resolved_at is not None
+
+
+def test_refresh_renders_clean_message_on_sqlite_error(repos: Repos) -> None:
+    """issue #12 (reopened): Textual's widget exception handler prints a
+    raw ``rich.traceback.Traceback(show_locals=True)`` on any exception
+    raised from a timer/handler, bypassing ``cli/main.py``'s
+    ``sqlite3.Error`` boundary entirely. ``_refresh`` must catch the
+    DB error itself and render a clean in-UI message instead -- the
+    next polling tick retries automatically."""
+
+    async def scenario() -> str:
+        async with _app(repos).run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                repos.batches,
+                "list_pending",
+                side_effect=sqlite3.OperationalError("database is locked"),
+            ):
+                pilot.app._refresh()  # noqa: SLF001 -- private but the only entry point
+                await pilot.pause()
+            return str(pilot.app.query_one("#waiting-notice").content)
+
+    out = asyncio.run(scenario())
+    assert "database is locked" in out
+    assert "bloqueando" in out.lower()

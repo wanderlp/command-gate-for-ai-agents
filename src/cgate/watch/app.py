@@ -8,6 +8,7 @@ approvals run in a worker thread so the UI stays responsive during exec.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.app import App, ComposeResult
@@ -167,7 +168,26 @@ class WatchApp(App[None]):
 
     def _refresh(self) -> None:
         """Re-read the queue from the database and update every widget from it."""
-        pending = self._batches.list_pending()
+        try:
+            pending = self._batches.list_pending()
+        except sqlite3.Error as exc:
+            # Textual's framework catches every widget exception, runs it
+            # through `_handle_exception` -> `_fatal_error`, and prints a
+            # raw `rich.traceback.Traceback(show_locals=True)` in
+            # `_shutdown()`. That bypasses the sqlite3.Error boundary in
+            # cli/main.py (issue #12): the user sees a noisy traceback
+            # and a clean exit code, with no hint that another cgate
+            # process is holding the DB or that the file is corrupted.
+            # Render a clean in-UI message instead and let the next poll
+            # tick retry automatically.
+            notice = self.query_one("#waiting-notice", Static)
+            _ = notice.update(
+                f"[red]No se pudo leer la base de datos:[/red] {exc}\n"
+                "[dim]Revisa que ningún otro proceso cgate esté bloqueando "
+                "cgate.db. La próxima lectura lo reintentará automáticamente.[/dim]"
+            )
+            self.sub_title = "error de base de datos"  # pyright: ignore[reportUnannotatedClassAttribute]
+            return
         active = pending[0] if pending else None
         self.query_one(QueueSidebar).refresh_queue(pending, active.id if active else None)
         notice = self.query_one("#waiting-notice", Static)
@@ -176,7 +196,7 @@ class WatchApp(App[None]):
         if active is None:
             panel.show_idle()
             # Reactive[str] on the base class; reassigning it is the documented
-            # Textual pattern, but basedpyright wants a same-scope annotation.
+            # Textual pattern, but basedpyright wants a same-interval annotation.
             self.sub_title = "sin lotes pendientes"  # pyright: ignore[reportUnannotatedClassAttribute]
             return
         commands_in_batch = self._commands.list_for_batch(active.id)

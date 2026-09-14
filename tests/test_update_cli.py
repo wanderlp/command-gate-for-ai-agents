@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -21,6 +22,7 @@ _DETACHED_PROCESS = 0x00000008
 _CREATE_NO_WINDOW = 0x08000000
 _BLOCKING_PID = 999
 _MANUAL_RECOVERY_EXIT_CODE = 4
+_UNCAUGHT_SWAP_FAILURE_MSG = "unexpected deep failure"
 
 
 def test_spawn_delayed_swap_suppresses_console_window_on_windows(
@@ -60,8 +62,10 @@ def _mock_update_available(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     )
     monkeypatch.setattr("cgate.cli.update.current_binary_path", lambda: tmp_path / "cgate.exe")
     monkeypatch.setattr("cgate.cli.update.download_to", lambda _asset, _dest: None)
+    # Accept the new ``exclude_pid`` kwarg added by issue #19's fix.
     monkeypatch.setattr(
-        "cgate.cli.update.find_blocking_processes", lambda _binary: [_BLOCKING_PID]
+        "cgate.cli.update.find_blocking_processes",
+        lambda _binary, *, exclude_pid=None: [_BLOCKING_PID],  # noqa: ARG005
     )
 
 
@@ -125,8 +129,10 @@ def test_apply_cleans_up_previous_snapshot_when_swap_never_happens(
     monkeypatch.setattr("cgate.cli.update.current_binary_path", lambda: binary)
     monkeypatch.setattr("cgate.cli.update.download_to", lambda _asset, _dest: None)
     monkeypatch.setattr("cgate.cli.update.replace_binary", lambda _staging, _target: "locked")
+    # issue #19: find_blocking_processes now takes ``exclude_pid``.
     monkeypatch.setattr(
-        "cgate.cli.update.find_blocking_processes", lambda _binary: [_BLOCKING_PID]
+        "cgate.cli.update.find_blocking_processes",
+        lambda _binary, *, exclude_pid=None: [_BLOCKING_PID],  # noqa: ARG005
     )
     monkeypatch.setattr("cgate.cli.update.find_mcp_serving_pids", lambda _pids: [])
 
@@ -142,3 +148,135 @@ def test_apply_cleans_up_previous_snapshot_when_swap_never_happens(
     assert "Rollback slot" not in unwrapped_output
     assert "Staged download" in unwrapped_output
     assert str(staging) in unwrapped_output
+
+
+# --- Reopen follow-ups ---
+
+
+def test_apply_warns_loudly_when_running_process_serves_mcp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """issue #19 (reopened): self-lock alone used to skip the MCP
+    warning because `find_blocking_processes` always reported the
+    running process as its own blocker (no `exclude_pid`). The fix
+    must surface the warning even when the swap-failure cause is
+    self-lock and the running process is the MCP server."""
+    _mock_update_available(monkeypatch, tmp_path)
+    self_pid = os.getpid()
+    monkeypatch.setattr(
+        "cgate.cli.update.find_blocking_processes",
+        lambda _binary, *, exclude_pid=None: [],  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        "cgate.cli.update.find_mcp_serving_pids",
+        lambda pids: [self_pid] if self_pid in pids else [],
+    )
+    monkeypatch.setattr("cgate.cli.update.replace_binary", lambda _s, _t: "locked")
+    monkeypatch.setattr(
+        "cgate.cli.update._spawn_delayed_swap", lambda _s, _t: True
+    )
+
+    result = CliRunner().invoke(app, ["update", "apply"], input="y\n")
+
+    assert "live MCP session" in result.output
+    assert str(self_pid) in result.output
+    assert "Update staged" in result.output
+    assert result.exit_code == 0
+
+
+def test_apply_force_mcp_required_for_self_locked_mcp_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """issue #19 (reopened): --force-mcp is the bypass for the loud
+    self-MCP warning. Without it, declining the prompt must NOT spawn
+    the delayed-swap helper -- only the manual-recovery path runs."""
+    _mock_update_available(monkeypatch, tmp_path)
+    self_pid = os.getpid()
+    monkeypatch.setattr(
+        "cgate.cli.update.find_blocking_processes",
+        lambda _binary, *, exclude_pid=None: [],  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        "cgate.cli.update.find_mcp_serving_pids",
+        lambda pids: [self_pid] if self_pid in pids else [],
+    )
+    monkeypatch.setattr("cgate.cli.update.replace_binary", lambda _s, _t: "locked")
+    spawn_calls = {"count": 0}
+    monkeypatch.setattr(
+        "cgate.cli.update._spawn_delayed_swap",
+        lambda _s, _t: (spawn_calls.update(count=spawn_calls["count"] + 1) or True),
+    )
+
+    result = CliRunner().invoke(app, ["update", "apply"], input="n\n")
+
+    assert "live MCP session" in result.output
+    assert spawn_calls["count"] == 0
+
+
+def test_apply_orphans_are_flagged_at_startup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """issue #15 (reopened): `.new` / `.previous` files left over from
+    a previous run must be surfaced to the user instead of silently
+    overwritten."""
+    binary = tmp_path / "cgate.exe"
+    binary.write_bytes(b"current binary bytes")
+    staging = binary.with_name(binary.name + ".new")
+    previous = binary.with_name(binary.name + ".previous")
+    staging.write_bytes(b"staged from last run")
+    previous.write_bytes(b"snapshot from last run")
+
+    monkeypatch.setattr(
+        "cgate.cli.update.fetch_latest_release",
+        lambda: Release(tag="v9.9.9", version="9.9.9", html_url="https://x", assets=()),
+    )
+    monkeypatch.setattr("cgate.cli.update.__version__", "9.9.9")
+    # Short-circuit before any overwrite happens so we can read the
+    # warning without first nuking the orphans.
+    monkeypatch.setattr("cgate.cli.update.compare_versions", lambda _a, _b: 0)
+    monkeypatch.setattr("cgate.cli.update.current_binary_path", lambda: binary)
+
+    result = CliRunner().invoke(app, ["update", "apply"])
+
+    # Rich wraps long paths across newlines, so compare against an
+    # unwrapped copy and the original to cover both.
+    unwrapped = result.output.replace("\n", "")
+    assert "leftover staged download" in unwrapped.lower()
+    assert "leftover rollback snapshot" in unwrapped.lower()
+    assert str(staging) in unwrapped
+    assert str(previous) in unwrapped
+    assert staging.exists()
+    assert previous.exists()
+
+
+def test_apply_cleans_up_staged_files_on_uncaught_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """issue #15 (reopened): an unexpected exception between successful
+    download and end of swap handling must not leak `.new` / `.previous`."""
+    binary = tmp_path / "cgate.exe"
+    binary.write_bytes(b"current binary bytes")
+    monkeypatch.setattr(
+        "cgate.cli.update.fetch_latest_release",
+        lambda: Release(tag="v9.9.9", version="9.9.9", html_url="https://x", assets=()),
+    )
+    monkeypatch.setattr("cgate.cli.update.__version__", "0.0.1")
+    monkeypatch.setattr(
+        "cgate.cli.update.select_asset",
+        lambda _release: Asset("cgate-windows-amd64.exe", "https://x/bin", 1, ""),
+    )
+    monkeypatch.setattr("cgate.cli.update.current_binary_path", lambda: binary)
+    monkeypatch.setattr("cgate.cli.update.download_to", lambda _a, _d: None)
+
+    def _boom(_staging: Path, _target: Path) -> str | None:
+        raise RuntimeError(_UNCAUGHT_SWAP_FAILURE_MSG)
+
+    monkeypatch.setattr("cgate.cli.update.replace_binary", _boom)
+
+    result = CliRunner().invoke(app, ["update", "apply"])
+
+    previous = binary.with_name(binary.name + ".previous")
+    staging = binary.with_name(binary.name + ".new")
+    assert isinstance(result.exception, RuntimeError)
+    assert not staging.exists()
+    assert not previous.exists()
