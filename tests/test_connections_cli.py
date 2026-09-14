@@ -206,24 +206,60 @@ def test_connections_remove_reports_missing_alias(
     assert "No connection" in result.stdout
 
 
-def test_connections_remove_aborts_before_deleting_row_when_keyring_fails(
+def test_connections_remove_aborts_before_deleting_row_when_keyring_raises(
     runner: CliRunner,
     isolated_env: dict[str, Path],
     fake_probe: MagicMock,
     fake_keyring: _FakeKeyring,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """issue #5: if the keyring backend fails, the DB row must survive --
-    deleting it first would leave a stray, unreachable keyring credential."""
-    monkeypatch.setattr("cgate.cli.connections.is_kerberos_available", lambda: True)
+    """issue #5: if a stored credential can't be removed (the helper raises
+    a non-`KeyringError` exception), the DB row must survive -- deleting
+    it first would leave a stray, unreachable keyring credential."""
+    monkeypatch.setattr("cgate.cli.connections.is_kerberos_available", lambda: False)
     with patch("cgate.cli.connections.probe_host", return_value=fake_probe):
-        added = runner.invoke(app, ["connections", "add", "srv-test", "example.com"])
+        # Username -> empty SSH key path -> password auth.
+        added = runner.invoke(
+            app,
+            ["connections", "add", "srv-test", "example.com"],
+            input="alice\n\nhunter2\n",
+        )
     assert added.exit_code == 0, added.stdout
 
     with patch(
         "cgate.cli.connections.remove_credential",
         side_effect=RuntimeError("keyring backend unavailable"),
     ):
+        result = runner.invoke(app, ["connections", "remove", "srv-test"], input="y\n")
+
+    assert result.exit_code == 1
+    assert "NOT removed" in result.stdout
+    listing = runner.invoke(app, ["connections", "list"])
+    assert "srv-test" in listing.stdout
+
+
+def test_connections_remove_aborts_before_deleting_row_when_keyring_returns_false(
+    runner: CliRunner,
+    isolated_env: dict[str, Path],
+    fake_probe: MagicMock,
+    fake_keyring: _FakeKeyring,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """issue #5 (reopened): if `remove_credential` swallows `NoKeyringError`
+    and returns False -- the headless-Linux case from the original report
+    -- the CLI must still abort instead of falling through to `repo.remove`.
+    The original regression test only mocked the exception path; this
+    covers the more common real-world case."""
+    monkeypatch.setattr("cgate.cli.connections.is_kerberos_available", lambda: False)
+    with patch("cgate.cli.connections.probe_host", return_value=fake_probe):
+        added = runner.invoke(
+            app,
+            ["connections", "add", "srv-test", "example.com"],
+            input="alice\n\nhunter2\n",
+        )
+    assert added.exit_code == 0, added.stdout
+
+    with patch("cgate.cli.connections.remove_credential", return_value=False):
         result = runner.invoke(app, ["connections", "remove", "srv-test"], input="y\n")
 
     assert result.exit_code == 1

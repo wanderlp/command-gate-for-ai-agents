@@ -8,6 +8,7 @@ approvals run in a worker thread so the UI stays responsive during exec.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.app import App, ComposeResult
@@ -165,33 +166,73 @@ class WatchApp(App[None]):
         self._refresh()
         _ = self.set_interval(_POLL_INTERVAL_SECONDS, self._refresh)
 
+    def _render_db_error(self, exc: sqlite3.Error) -> None:
+        """Render a database error on the TUI without raising (issue #12).
+
+        Textual's widget-exception handler runs `_handle_exception` →
+        `_fatal_error` → prints a raw
+        `rich.traceback.Traceback(show_locals=True)` on `_shutdown()`,
+        bypassing the `sqlite3.Error` boundary in `cli/main.py`. Every
+        DB-touching method on this app must funnel errors through this
+        helper so the user sees a clean in-UI message and stays in the
+        dashboard; the next polling tick (or the user's next keypress)
+        will retry the read automatically.
+
+        Best-effort: if the widget tree is already gone (e.g. `query_one`
+        raises during teardown), this swallows rather than raising,
+        since Textual would otherwise print its own traceback on top of
+        the broken one.
+        """
+        try:
+            notice = self.query_one("#waiting-notice", Static)
+            _ = notice.update(
+                f"[red]No se pudo leer la base de datos:[/red] {exc}\n"
+                "[dim]Revisa que ningún otro proceso cgate esté bloqueando "
+                "cgate.db. La próxima lectura lo reintentará automáticamente.[/dim]"
+            )
+            self.sub_title = "error de base de datos"  # pyright: ignore[reportUnannotatedClassAttribute]
+        except Exception:
+            pass
+
     def _refresh(self) -> None:
         """Re-read the queue from the database and update every widget from it."""
-        pending = self._batches.list_pending()
-        active = pending[0] if pending else None
-        self.query_one(QueueSidebar).refresh_queue(pending, active.id if active else None)
-        notice = self.query_one("#waiting-notice", Static)
-        _ = notice.update(format_waiting_notice(count_waiting(self._batches)))
-        panel = self.query_one(ActivePanel)
-        if active is None:
-            panel.show_idle()
-            # Reactive[str] on the base class; reassigning it is the documented
-            # Textual pattern, but basedpyright wants a same-scope annotation.
-            self.sub_title = "sin lotes pendientes"  # pyright: ignore[reportUnannotatedClassAttribute]
-            return
-        commands_in_batch = self._commands.list_for_batch(active.id)
-        panel.show_batch(active, commands_in_batch)
-        pending_here = len(pending_commands_in_batch(commands_in_batch))
-        self.sub_title = f"{pending_here} pendiente(s)"
+        try:
+            pending = self._batches.list_pending()
+            active = pending[0] if pending else None
+            self.query_one(QueueSidebar).refresh_queue(pending, active.id if active else None)
+            notice = self.query_one("#waiting-notice", Static)
+            _ = notice.update(format_waiting_notice(count_waiting(self._batches)))
+            panel = self.query_one(ActivePanel)
+            if active is None:
+                panel.show_idle()
+                # Reactive[str] on the base class; reassigning it is the documented
+                # Textual pattern, but basedpyright wants a same-interval annotation.
+                self.sub_title = "sin lotes pendientes"  # pyright: ignore[reportUnannotatedClassAttribute]
+                return
+            commands_in_batch = self._commands.list_for_batch(active.id)
+            panel.show_batch(active, commands_in_batch)
+            pending_here = len(pending_commands_in_batch(commands_in_batch))
+            self.sub_title = f"{pending_here} pendiente(s)"
+        except sqlite3.Error as exc:
+            self._render_db_error(exc)
 
     def _first_pending(self) -> Command | None:
-        """Return the active batch's next pending command, or None."""
-        pending = self._batches.list_pending()
-        if not pending:
+        """Return the active batch's next pending command, or None.
+
+        Returns ``None`` on a DB error too -- action handlers already
+        treat ``None`` as "no-op", so the user's keypress becomes a
+        silent skip while the error message stays on screen.
+        """
+        try:
+            pending = self._batches.list_pending()
+            if not pending:
+                return None
+            commands_in_batch = self._commands.list_for_batch(pending[0].id)
+            remaining = pending_commands_in_batch(commands_in_batch)
+            return remaining[0] if remaining else None
+        except sqlite3.Error as exc:
+            self._render_db_error(exc)
             return None
-        commands_in_batch = self._commands.list_for_batch(pending[0].id)
-        remaining = pending_commands_in_batch(commands_in_batch)
-        return remaining[0] if remaining else None
 
     async def action_approve_one(self) -> None:
         """Approve and execute the active batch's next pending command."""
@@ -209,7 +250,11 @@ class WatchApp(App[None]):
         command = self._first_pending()
         if command is None:
             return
-        _ = reject_one(commands=self._commands, batches=self._batches, command_id=command.id)
+        try:
+            _ = reject_one(commands=self._commands, batches=self._batches, command_id=command.id)
+        except sqlite3.Error as exc:
+            self._render_db_error(exc)
+            return
         self._refresh()
 
     async def action_approve_all(self) -> None:
@@ -224,21 +269,33 @@ class WatchApp(App[None]):
         if self._busy:
             return
         while (command := self._first_pending()) is not None:
-            _ = reject_one(commands=self._commands, batches=self._batches, command_id=command.id)
+            try:
+                _ = reject_one(
+                    commands=self._commands,
+                    batches=self._batches,
+                    command_id=command.id,
+                )
+            except sqlite3.Error as exc:
+                self._render_db_error(exc)
+                return
         self._refresh()
 
     async def _approve(self, command_id: CommandId) -> None:
         """Run one approval off the event loop thread, then refresh the view."""
         self._busy = True
         try:
-            _ = await asyncio.to_thread(
-                approve_one,
-                db=self._db,
-                commands=self._commands,
-                connections=self._connections,
-                batches=self._batches,
-                command_id=command_id,
-            )
+            try:
+                _ = await asyncio.to_thread(
+                    approve_one,
+                    db=self._db,
+                    commands=self._commands,
+                    connections=self._connections,
+                    batches=self._batches,
+                    command_id=command_id,
+                )
+            except sqlite3.Error as exc:
+                self._render_db_error(exc)
+                return
         finally:
             self._busy = False
         self._refresh()
