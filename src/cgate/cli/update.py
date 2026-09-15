@@ -8,25 +8,28 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Final
 
 import typer
 from rich.console import Console
 
 from cgate import __version__
-from cgate.cli._swap_helper import append_log
+from cgate.core.paths import data_dir
+from cgate.core.update_log import append_log
 from cgate.update import (
     Release,
     UpdateError,
     compare_versions,
     current_binary_path,
     download_to,
+    ensure_helper_binary,
     fetch_latest_release,
     find_blocking_processes,
     find_mcp_serving_pids,
     kill_process,
     replace_binary,
     select_asset,
+    spawn_helper,
     verify_attestation,
 )
 
@@ -42,6 +45,10 @@ console = Console()
 # before we retry the rename. Empirically 1s is enough on stock Windows 11;
 # keep it short enough not to feel laggy in interactive use.
 _KILL_SETTLE_SECONDS: float = 1.0
+# How many trailing update.log lines `cgate update status` shows -- enough
+# to see the outcome of the last background op without dumping the whole
+# file's history.
+_STATUS_LOG_LINES: Final = 15
 
 
 def _print_release_summary(release: Release) -> None:
@@ -68,6 +75,44 @@ def check_cmd() -> None:
         f"[yellow]Update available: {__version__} -> {release.version}[/yellow]"
     )
     console.print("Run [bold]cgate update apply[/bold] to install.")
+
+
+@update_app.command("status")
+def status_cmd() -> None:
+    """Show the current version and the outcome of the last background update/delete.
+
+    A deferred swap/delete (see ``_swap_via_helper_or_fallback`` /
+    ``cli.uninstall._delete_via_helper_or_fallback``) finishes after this
+    process has already exited, so there was previously no way to check
+    whether it actually succeeded short of re-running ``cgate --version``
+    and eyeballing the number. This surfaces the existing signals --
+    staged files and ``update.log`` -- rather than tracking job state.
+    """
+    console.print(f"cgate {__version__}")
+
+    binary = current_binary_path()
+    if binary is not None:
+        staging = binary.with_name(binary.name + ".new")
+        previous = binary.with_name(binary.name + ".previous")
+        if staging.exists():
+            console.print(
+                f"[yellow]Staged download present:[/yellow] {staging}\n"
+                "[dim]An update may still be finishing in the background, "
+                "or a prior one didn't complete.[/dim]"
+            )
+        if previous.exists():
+            console.print(f"[dim]Rollback snapshot present:[/dim] {previous}")
+
+    log_path = data_dir() / "update.log"
+    if not log_path.exists():
+        console.print("[dim]No update.log yet -- no background update/uninstall has run.[/dim]")
+        return
+
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    tail = lines[-_STATUS_LOG_LINES:]
+    console.print(f"\n[bold]Last {len(tail)} line(s) of {log_path}:[/bold]")
+    for line in tail:
+        console.print(f"  {line}")
 
 
 def _download_and_verify(asset: Asset, release: Release, staging: Path) -> None:
@@ -208,7 +253,7 @@ def apply_cmd(
             staging=staging,
             binary=binary,
             rollback_msg=rollback_msg,
-            release_version=release.version,
+            release=release,
             force=force,
             force_mcp=force_mcp,
         )
@@ -235,7 +280,7 @@ def _attempt_swap_with_recovery(
     staging: Path,
     binary: Path,
     rollback_msg: str,
-    release_version: str,
+    release: Release,
     force: bool,
     force_mcp: bool,
 ) -> None:
@@ -252,6 +297,7 @@ def _attempt_swap_with_recovery(
     - Self only (Windows): straight delayed swap.
     - Nobody: genuine OS-level swap failure -> manual recovery.
     """
+    release_version = release.version
     err = replace_binary(staging, binary)
     if err is None:
         console.print(
@@ -291,11 +337,9 @@ def _attempt_swap_with_recovery(
             default=False,
         )
         if proceed:
-            append_log(
-                "update apply: direct swap failed, self-lock + MCP serving "
-                f"detected (PID {self_pid}), spawning cmd.exe for {binary}"
-            )
-            if _spawn_delayed_swap(staging, binary):
+            if _swap_via_helper_or_fallback(
+                staging, binary, wait_pids=[self_pid], release=release
+            ):
                 console.print(
                     "[green]Update staged.[/green] The move will complete "
                     "in the background after this process exits. Re-run "
@@ -349,15 +393,10 @@ def _attempt_swap_with_recovery(
     elif sys.platform == "win32":
         # No other cgate processes and we aren't ourselves serving MCP.
         # On Windows the running executable is always locked by this
-        # process, so the most likely cause is plain self-lock: try the
-        # delayed swap helper (cmd.exe is not cgate.exe so it doesn't
-        # hold the lock; the ping burns a few seconds for us to exit
-        # and release our handle).
-        append_log(
-            f"update apply: direct swap failed, self-lock detected "
-            f"(PID {self_pid}), spawning cmd.exe for {binary}"
-        )
-        if _spawn_delayed_swap(staging, binary):
+        # process, so the most likely cause is plain self-lock.
+        if _swap_via_helper_or_fallback(
+            staging, binary, wait_pids=[self_pid], release=release
+        ):
             console.print(
                 "[green]Update staged.[/green] The move will complete "
                 "in the background after this process exits. Re-run "
@@ -386,6 +425,33 @@ def _attempt_swap_with_recovery(
     # points the user at it for the manual move.
     previous.unlink(missing_ok=True)
     raise typer.Exit(code=4)
+
+
+def _swap_via_helper_or_fallback(
+    staging: Path, binary: Path, *, wait_pids: list[int], release: Release
+) -> bool:
+    """Prefer the compiled ``cgate-helper.exe`` to perform the swap.
+
+    Falls back to the ``cmd.exe`` shell-chain when it isn't available or
+    fails to spawn. The compiled helper does a real wait-for-exit on
+    ``wait_pids`` (not the shell-chain's blind ~4s ``ping`` delay) and
+    never shares an image name with ``cgate.exe``, so there is nothing to
+    disambiguate on Windows's process list. ``release`` pairs the
+    helper's version with the cgate version being installed
+    (``ensure_helper_binary`` downloads and attestation-verifies it from
+    that same release on first use).
+    """
+    helper = ensure_helper_binary(binary, release)
+    if helper is not None:
+        wait_args = [arg for pid in wait_pids for arg in ("--wait-pid", str(pid))]
+        spawned = spawn_helper(
+            helper, "replace", "--target", str(binary), "--source", str(staging), *wait_args
+        )
+        if spawned:
+            append_log(f"update apply: dispatched compiled helper {helper} for {binary}")
+            return True
+        append_log("update apply: compiled helper spawn failed, falling back to shell-chain")
+    return _spawn_delayed_swap(staging, binary)
 
 
 def _spawn_delayed_swap(staging, target) -> bool:

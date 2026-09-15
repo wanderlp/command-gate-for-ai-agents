@@ -77,6 +77,10 @@ $ cgate update check
 Latest: cgate 0.2.0 (release v0.2.0)
 Update available: 0.1.0 -> 0.2.0
 Run `cgate update apply` to install.
+
+# On Windows the swap sometimes finishes in the background after `apply`
+# exits (see "Self-update on Windows" below) -- check on it with:
+$ cgate update status
 ```
 
 ## Status
@@ -85,7 +89,7 @@ Phase 1 complete: end-to-end propose → approve → execute → audit loop work
 plus a round of security/robustness hardening (host key verification, TLS
 validation, DB race-condition fixes, GitHub Actions build-provenance
 attestation verification on self-update, and more).
-201 unit/integration tests pass; ruff + basedpyright pass with a handful of
+242 unit/integration tests pass; ruff + basedpyright pass with a handful of
 accepted pre-existing findings (no known bugs, just style/complexity debt).
 
 ## Development
@@ -107,6 +111,13 @@ uv run python scripts/build-binary.py
 ls dist/
 ```
 
+On Windows, build the companion helper binary the same way (see "Self-update
+on Windows" below):
+
+```console
+uv run python scripts/build-binary.py --name=cgate-helper --entry=src/cgate/helper/__main__.py --minimal
+```
+
 ## Layout
 
 ```text
@@ -116,6 +127,7 @@ src/cgate/
 ├── core/         # Shared paths and primitives
 ├── db/           # Local SQLite persistence (batches, commands, connections)
 ├── executor/     # WinRM and SSH execution
+├── helper/       # Standalone cgate-helper.exe: Windows-only file swap for self-update
 ├── mcp_server/   # MCP server exposing propose_command / list_connections / check_status
 └── watch/        # Interactive approval queue (y/n/a/r controls)
 ```
@@ -123,3 +135,20 @@ src/cgate/
 Release assets are produced by `.github/workflows/release.yml` on every tag push
 (`git tag v0.1.5 && git push origin main v0.1.5`) and uploaded as platform-native
 binaries to a GitHub Release.
+
+### Self-update on Windows: the compiled helper
+
+Windows locks a running executable's own image file, so `cgate.exe` cannot
+rename or delete itself while it's the process doing the work. `cgate update
+apply` and `cgate uninstall --binary` both hand that step off to
+`cgate-helper.exe` — a second, much smaller binary (`src/cgate/helper/`,
+Windows-only, built and attestation-verified alongside the main binary) that
+never shares an image name with `cgate.exe`. It waits for the caller's PID to
+actually exit (not a fixed delay), retries the rename/delete briefly to
+absorb a lingering AV scan, and logs the outcome to `update.log` (see `cgate
+update status`). If the helper isn't available yet — offline, or a version
+that predates this feature — both commands fall back to a `cmd.exe`-based
+delayed swap/delete, same as before. Either way, a version upgrading *from*
+a build that predates this feature still needs one manual recovery step the
+first time, since the code making that decision at that moment is the old
+binary — a one-time bootstrap cost.

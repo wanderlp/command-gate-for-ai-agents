@@ -1,4 +1,4 @@
-"""Tests for ``cgate.cli._swap_helper.append_log``."""
+"""Tests for ``cgate.core.update_log.append_log``."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from cgate.cli._swap_helper import append_log
+from cgate.core.update_log import append_log
 
 
 def test_append_log_writes_to_data_dir_update_log(

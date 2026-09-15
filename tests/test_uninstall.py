@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -153,6 +154,10 @@ def test_uninstall_binary_self_lock_defers_delete_on_windows(
     monkeypatch.setattr(
         "cgate.cli.uninstall.find_blocking_processes", lambda *a, **k: []
     )
+    # No compiled helper available locally or fetchable -- force the
+    # shell-chain fallback deterministically instead of letting
+    # ensure_helper_binary make a real network call in a test.
+    monkeypatch.setattr("cgate.cli.uninstall.ensure_helper_binary", lambda *a, **k: None)
     spawned: list[Path] = []
     monkeypatch.setattr(
         "cgate.cli.uninstall._spawn_delayed_delete",
@@ -175,6 +180,44 @@ def test_uninstall_binary_self_lock_defers_delete_on_windows(
     assert "will be deleted automatically" in flat_stdout
     assert "Uninstall complete" in flat_stdout
     assert binary.exists()  # deletion is done by the (mocked) background helper
+
+
+def test_uninstall_binary_prefers_compiled_helper_when_available(
+    runner: CliRunner, isolated_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When a compiled helper is available, it must be used instead of the
+    cmd.exe shell-chain fallback."""
+    binary = isolated_env["binary"]
+    helper = binary.with_name("cgate-helper.exe")
+    monkeypatch.setattr(sys, "platform", "win32")
+    # append_log resolves data_dir() at call time -- without this, a
+    # successful (mocked) spawn writes a real line to the machine's
+    # actual update.log instead of staying inside isolated_env's tmp_path.
+    monkeypatch.setattr("cgate.core.paths.data_dir", lambda: isolated_env["data"])
+    monkeypatch.setattr("cgate.cli.uninstall.find_blocking_processes", lambda *a, **k: [])
+    monkeypatch.setattr("cgate.cli.uninstall.ensure_helper_binary", lambda *a, **k: helper)
+    spawn_calls: list[tuple] = []
+    monkeypatch.setattr(
+        "cgate.cli.uninstall.spawn_helper",
+        lambda _helper, *args: spawn_calls.append(args) or True,
+    )
+
+    real_unlink = Path.unlink
+
+    def fake_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self == binary:
+            raise PermissionError(13, "locked", str(self))
+        real_unlink(self, *args, **kwargs)
+
+    with (
+        patch.object(Path, "unlink", fake_unlink),
+        patch("cgate.cli.uninstall._spawn_delayed_delete") as fallback,
+    ):
+        result = runner.invoke(app, ["uninstall", "--binary", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    fallback.assert_not_called()
+    assert spawn_calls == [("delete", "--target", str(binary), "--wait-pid", str(os.getpid()))]
 
 
 def test_uninstall_binary_kills_other_blocker_and_retries(

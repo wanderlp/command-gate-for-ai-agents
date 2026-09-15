@@ -10,7 +10,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from cgate.cli.main import app
-from cgate.cli.update import _spawn_delayed_swap
+from cgate.cli.update import _spawn_delayed_swap, _swap_via_helper_or_fallback
 from cgate.update import Asset, Release
 
 if TYPE_CHECKING:
@@ -47,6 +47,67 @@ def test_spawn_delayed_swap_uses_mv_on_non_windows(monkeypatch: pytest.MonkeyPat
     assert ok is True
     assert popen.call_args.args[0] == ["mv", "-f", "staging", "cgate"]
     assert "creationflags" not in popen.call_args.kwargs
+
+
+def test_swap_via_helper_prefers_the_compiled_helper_when_available(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    binary = tmp_path / "cgate.exe"
+    staging = tmp_path / "cgate.exe.new"
+    helper = tmp_path / "cgate-helper.exe"
+    release = Release(tag="v9.9.9", version="9.9.9", html_url="https://x", assets=())
+
+    # append_log resolves data_dir() at call time -- without this, a
+    # successful (mocked) spawn writes a real line to the machine's
+    # actual update.log instead of staying inside tmp_path.
+    monkeypatch.setattr("cgate.core.paths.data_dir", lambda: tmp_path)
+    monkeypatch.setattr("cgate.cli.update.ensure_helper_binary", lambda _b, _r: helper)
+    spawn_calls: list[tuple] = []
+    monkeypatch.setattr(
+        "cgate.cli.update.spawn_helper",
+        lambda _helper, *args: spawn_calls.append(args) or True,
+    )
+    with patch("cgate.cli.update._spawn_delayed_swap") as fallback:
+        ok = _swap_via_helper_or_fallback(staging, binary, wait_pids=[4242], release=release)
+
+    assert ok is True
+    fallback.assert_not_called()
+    assert spawn_calls == [
+        ("replace", "--target", str(binary), "--source", str(staging), "--wait-pid", "4242")
+    ]
+
+
+def test_swap_via_helper_falls_back_when_helper_unavailable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    binary = tmp_path / "cgate.exe"
+    staging = tmp_path / "cgate.exe.new"
+    release = Release(tag="v9.9.9", version="9.9.9", html_url="https://x", assets=())
+
+    monkeypatch.setattr("cgate.cli.update.ensure_helper_binary", lambda _b, _r: None)
+    with patch("cgate.cli.update._spawn_delayed_swap", return_value=True) as fallback:
+        ok = _swap_via_helper_or_fallback(staging, binary, wait_pids=[1], release=release)
+
+    assert ok is True
+    fallback.assert_called_once_with(staging, binary)
+
+
+def test_swap_via_helper_falls_back_when_spawn_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    binary = tmp_path / "cgate.exe"
+    staging = tmp_path / "cgate.exe.new"
+    helper = tmp_path / "cgate-helper.exe"
+    release = Release(tag="v9.9.9", version="9.9.9", html_url="https://x", assets=())
+
+    monkeypatch.setattr("cgate.core.paths.data_dir", lambda: tmp_path)
+    monkeypatch.setattr("cgate.cli.update.ensure_helper_binary", lambda _b, _r: helper)
+    monkeypatch.setattr("cgate.cli.update.spawn_helper", lambda *_a, **_k: False)
+    with patch("cgate.cli.update._spawn_delayed_swap", return_value=True) as fallback:
+        ok = _swap_via_helper_or_fallback(staging, binary, wait_pids=[1], release=release)
+
+    assert ok is True
+    fallback.assert_called_once_with(staging, binary)
 
 
 def _mock_update_available(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

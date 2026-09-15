@@ -20,12 +20,17 @@ from cgate.update import (
     compare_versions,
     current_binary_path,
     download_to,
+    ensure_helper_binary,
     fetch_latest_release,
+    fetch_release_by_tag,
     find_blocking_processes,
     find_mcp_serving_pids,
+    helper_binary_path,
     kill_process,
     replace_binary,
     select_asset,
+    select_helper_asset,
+    spawn_helper,
     verify_attestation,
 )
 
@@ -612,3 +617,213 @@ def test_verify_attestation_raises_update_error_on_network_failure() -> None:
         pytest.raises(UpdateError, match="failed to fetch attestation"),
     ):
         verify_attestation(asset, release)
+
+
+# --- compiled cgate-helper.exe: fetching, selecting, spawning ---
+
+
+def test_fetch_release_by_tag_hits_the_tags_endpoint() -> None:
+    body = json.dumps(
+        {"tag_name": "v0.1.17", "html_url": "https://x", "assets": []}
+    ).encode()
+    response = _mock_attestation_urlopen(body)
+
+    with patch("urllib.request.urlopen", return_value=response) as urlopen:
+        release = fetch_release_by_tag("v0.1.17", repo="wanderlp/command-gate")
+
+    assert release.version == "0.1.17"
+    requested_url = urlopen.call_args[0][0].full_url
+    assert requested_url.endswith("/releases/tags/v0.1.17")
+
+
+def test_fetch_release_by_tag_raises_update_error_on_http_error() -> None:
+    error = urllib.error.HTTPError("https://example.test", 404, "Not Found", hdrs=None, fp=None)
+
+    with (
+        patch("urllib.request.urlopen", side_effect=error),
+        pytest.raises(UpdateError, match="failed to fetch"),
+    ):
+        fetch_release_by_tag("v9.9.9")
+
+
+def test_select_helper_asset_matches_by_exact_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    expected = Asset("cgate-helper-windows-amd64.exe", "https://x/helper", 1, "")
+    other = Asset("cgate-windows-amd64.exe", "https://x/main", 1, "")
+    release = Release("v1", "1", "https://x", (other, expected))
+
+    assert select_helper_asset(release) == expected
+
+
+def test_select_helper_asset_returns_none_on_non_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    release = Release(
+        "v1",
+        "1",
+        "https://x",
+        (Asset("cgate-helper-windows-amd64.exe", "https://x/helper", 1, ""),),
+    )
+
+    assert select_helper_asset(release) is None
+
+
+def test_select_helper_asset_returns_none_for_older_release_without_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    release = Release(
+        "v1", "1", "https://x", (Asset("cgate-windows-amd64.exe", "https://x/main", 1, ""),)
+    )
+
+    assert select_helper_asset(release) is None
+
+
+def test_helper_binary_path_is_a_sibling_of_the_main_binary(tmp_path: Path) -> None:
+    binary = tmp_path / "cgate.exe"
+    assert helper_binary_path(binary) == tmp_path / "cgate-helper.exe"
+
+
+def test_spawn_helper_returns_false_on_non_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    with patch("subprocess.Popen") as popen:
+        ok = spawn_helper(Path("cgate-helper.exe"), "delete", "--target", "cgate.exe")
+
+    assert ok is False
+    popen.assert_not_called()
+
+
+def test_spawn_helper_launches_detached_process_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    with patch("subprocess.Popen") as popen:
+        ok = spawn_helper(Path("cgate-helper.exe"), "delete", "--target", "cgate.exe")
+
+    assert ok is True
+    (args,), kwargs = popen.call_args
+    assert args == ["cgate-helper.exe", "delete", "--target", "cgate.exe"]
+    assert kwargs["creationflags"] == 0x00000008 | 0x08000000
+
+
+def test_spawn_helper_returns_false_when_popen_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    with patch("subprocess.Popen", side_effect=OSError("nope")):
+        ok = spawn_helper(Path("cgate-helper.exe"), "delete", "--target", "cgate.exe")
+
+    assert ok is False
+
+
+# --- compiled cgate-helper.exe: ensure_helper_binary ---
+
+
+def test_ensure_helper_binary_returns_none_on_non_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    assert ensure_helper_binary(tmp_path / "cgate.exe") is None
+
+
+def test_ensure_helper_binary_short_circuits_when_already_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    helper = tmp_path / "cgate-helper.exe"
+    helper.write_bytes(b"already here")
+
+    with patch("cgate.update.fetch_release_by_tag") as fetch:
+        result = ensure_helper_binary(tmp_path / "cgate.exe")
+
+    assert result == helper
+    fetch.assert_not_called()
+
+
+def test_ensure_helper_binary_downloads_and_verifies_from_given_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    asset = Asset("cgate-helper-windows-amd64.exe", "https://x/helper", 1, "")
+    release = Release("v9.9.9", "9.9.9", "https://x", (asset,))
+
+    def fake_download_to(_asset: Asset, dest: Path) -> None:
+        dest.write_bytes(b"helper binary bytes")
+
+    with (
+        patch("cgate.update.download_to", side_effect=fake_download_to) as download,
+        patch("cgate.update.verify_attestation") as verify,
+    ):
+        result = ensure_helper_binary(tmp_path / "cgate.exe", release=release)
+
+    assert result == tmp_path / "cgate-helper.exe"
+    assert result.read_bytes() == b"helper binary bytes"
+    download.assert_called_once()
+    verify.assert_called_once_with(asset, release)
+
+
+def test_ensure_helper_binary_falls_back_to_current_version_tag_when_no_release_given(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    asset = Asset("cgate-helper-windows-amd64.exe", "https://x/helper", 1, "")
+    release = Release("v0.1.17", "0.1.17", "https://x", (asset,))
+
+    monkeypatch.setattr("cgate.update._cgate_version", lambda: "0.1.17")
+
+    def fake_download_to(_asset: Asset, dest: Path) -> None:
+        dest.write_bytes(b"bytes")
+
+    with (
+        patch("cgate.update.fetch_release_by_tag", return_value=release) as fetch,
+        patch("cgate.update.download_to", side_effect=fake_download_to),
+        patch("cgate.update.verify_attestation"),
+    ):
+        result = ensure_helper_binary(tmp_path / "cgate.exe")
+
+    assert result == tmp_path / "cgate-helper.exe"
+    fetch.assert_called_once_with("v0.1.17")
+
+
+def test_ensure_helper_binary_returns_none_when_release_has_no_helper_asset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    release = Release(
+        "v0.1.15", "0.1.15", "https://x", (Asset("cgate-windows-amd64.exe", "https://x", 1, ""),)
+    )
+
+    assert ensure_helper_binary(tmp_path / "cgate.exe", release=release) is None
+
+
+def test_ensure_helper_binary_returns_none_on_download_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    asset = Asset("cgate-helper-windows-amd64.exe", "https://x/helper", 1, "")
+    release = Release("v9.9.9", "9.9.9", "https://x", (asset,))
+
+    with patch("cgate.update.download_to", side_effect=UpdateError("boom")):
+        result = ensure_helper_binary(tmp_path / "cgate.exe", release=release)
+
+    assert result is None
+
+
+def test_ensure_helper_binary_returns_none_on_failed_attestation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    asset = Asset("cgate-helper-windows-amd64.exe", "https://x/helper", 1, "")
+    release = Release("v9.9.9", "9.9.9", "https://x", (asset,))
+
+    def fake_download_to(_asset: Asset, dest: Path) -> None:
+        dest.write_bytes(b"bytes")
+
+    with (
+        patch("cgate.update.download_to", side_effect=fake_download_to),
+        patch("cgate.update.verify_attestation", side_effect=UpdateError("bad signature")),
+    ):
+        result = ensure_helper_binary(tmp_path / "cgate.exe", release=release)
+
+    assert result is None
