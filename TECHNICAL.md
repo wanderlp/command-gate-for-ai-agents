@@ -28,6 +28,11 @@ Once installed, plain `cgate` goes back to showing help, exactly like any other 
 `cgate mcp install` re-registers (or registers a client you installed afterward)
 with its normal confirm-per-client prompts.
 
+For a scripted/silent deployment, add `--unattended`
+(`.\cgate-windows-amd64.exe --unattended`): same install, same zero prompts, but it
+skips the "Press Enter to close" pause and exits on its own the moment setup
+finishes, instead of waiting on a keypress nobody is there to send.
+
 ### macOS / Linux
 
 Same flow — download `cgate-macos-arm64` or `cgate-linux-x86_64` from the
@@ -108,7 +113,7 @@ Phase 1 complete: end-to-end propose → approve → execute → audit loop work
 plus a round of security/robustness hardening (host key verification, TLS
 validation, DB race-condition fixes, GitHub Actions build-provenance
 attestation verification on self-update, and more).
-281 unit/integration tests pass; ruff + basedpyright pass with a handful of
+284 unit/integration tests pass; ruff + basedpyright pass with a handful of
 accepted pre-existing findings (no known bugs, just style/complexity debt).
 
 ## Development
