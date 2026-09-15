@@ -8,8 +8,10 @@ from typing import TYPE_CHECKING
 import pytest
 from typer.testing import CliRunner
 
+from cgate.cli.install import maybe_auto_install
 from cgate.cli.main import app
 from cgate.core import path_env
+from cgate.mcp_installer import ClientInstall
 from tests.test_path_env import FakeWinReg
 
 if TYPE_CHECKING:
@@ -154,3 +156,76 @@ def test_install_end_to_end_never_touches_the_real_registry(
     assert result.exit_code == 0, result.stdout
     assert len(fake.set_value_calls) == 1
     assert fake.set_value_calls[0][2] == str(bin_dir)
+
+
+# --- maybe_auto_install (bare-invocation first-run trigger) ---
+
+
+def test_maybe_auto_install_returns_false_in_dev_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("cgate.cli.install.current_binary_path", lambda: None)
+    assert maybe_auto_install() is False
+
+
+def test_maybe_auto_install_returns_false_when_already_installed(
+    isolated_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("cgate.cli.install.current_binary_path", lambda: isolated_env["target"])
+    assert maybe_auto_install() is False
+
+
+def test_maybe_auto_install_performs_full_first_run_setup(
+    isolated_env: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Never let this test's auto-registration step reach the real
+    # detect_clients(), which would scan this actual machine's home
+    # directory for real IA client configs.
+    monkeypatch.setattr("cgate.cli.install.detect_clients", list)
+
+    result = maybe_auto_install()
+
+    assert result is True
+    assert isolated_env["target"].exists()
+    output = capsys.readouterr().out
+    assert "First run detected" in output
+    assert "Almost done" in output
+
+
+def test_maybe_auto_install_registers_detected_clients_without_prompting(
+    isolated_env: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_client = ClientInstall(
+        name="opencode", label="opencode", config_path=tmp_path / "opencode.jsonc"
+    )
+    monkeypatch.setattr("cgate.cli.install.detect_clients", lambda: [fake_client])
+    registered: list[tuple] = []
+    monkeypatch.setattr(
+        "cgate.cli.install.register",
+        lambda client, command, args: registered.append((client, command, args)),
+    )
+
+    result = maybe_auto_install()
+
+    assert result is True
+    assert len(registered) == 1
+    client, command, args = registered[0]
+    assert client is fake_client
+    assert command == str(isolated_env["target"])
+    assert args == ["mcp", "serve"]
+    assert "Registered opencode" in capsys.readouterr().out
+
+
+def test_maybe_auto_install_reports_no_clients_detected(
+    isolated_env: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("cgate.cli.install.detect_clients", list)
+
+    maybe_auto_install()
+
+    assert "No IA clients detected yet" in capsys.readouterr().out

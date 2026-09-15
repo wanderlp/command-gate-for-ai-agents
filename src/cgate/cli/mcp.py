@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from typing import Annotated
 
 import typer
@@ -10,6 +9,7 @@ from rich.console import Console
 from rich.rule import Rule
 from rich.table import Table
 
+from cgate.cli._console import should_pause, wait_for_enter
 from cgate.mcp_installer import (
     CLIENTS,
     current_binary_command,
@@ -23,19 +23,6 @@ mcp_app = typer.Typer(
     help="Manage the MCP server: register with IA clients, run as server."
 )
 console = Console()
-
-
-def _should_pause(no_pause: bool) -> bool:
-    """Pause for human review unless --no-pause or stdin is not a TTY."""
-    return not no_pause and sys.stdin.isatty()
-
-
-def _wait_for_enter() -> None:
-    """Block until the user presses Enter; silently no-op on EOF (pipe/CI)."""
-    try:
-        input("Press Enter to close...")
-    except EOFError:
-        pass
 
 
 @mcp_app.command("install")
@@ -140,9 +127,9 @@ def install_cmd(
             f"({', '.join(label for label, _ in failed)})"
         )
 
-    if _should_pause(no_pause):
+    if should_pause(no_pause):
         console.print()
-        _wait_for_enter()
+        wait_for_enter()
 
     if failed:
         raise typer.Exit(code=1)

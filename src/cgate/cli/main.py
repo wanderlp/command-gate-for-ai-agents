@@ -10,7 +10,7 @@ from rich.console import Console
 
 from cgate import __version__
 from cgate.cli.connections import connections_app
-from cgate.cli.install import install_cmd
+from cgate.cli.install import install_cmd, maybe_auto_install
 from cgate.cli.mcp import mcp_app
 from cgate.cli.uninstall import uninstall_cmd
 from cgate.cli.update import update_app
@@ -19,7 +19,6 @@ from cgate.cli.watch import watch_app
 app = typer.Typer(
     name="cgate",
     help="Middleware/CLI between AI agents and servers -- IA proposes, human approves.",
-    no_args_is_help=True,
     invoke_without_command=True,
 )
 app.add_typer(connections_app, name="connections")
@@ -38,6 +37,7 @@ def _version_callback(*, value: bool) -> None:
 
 @app.callback()
 def root(
+    ctx: typer.Context,
     *,
     _version: Annotated[
         bool,
@@ -50,7 +50,21 @@ def root(
         ),
     ] = False,
 ) -> None:
-    """Display help or route to a command group."""
+    """Display help or route to a command group.
+
+    A completely bare invocation (no subcommand, no options) used to
+    just print help via Typer's ``no_args_is_help``. Now it first checks
+    whether this is a freshly downloaded binary that isn't installed
+    yet -- if so, ``maybe_auto_install()`` runs the full first-run setup
+    instead, so "download and double-click" is enough on its own. Once
+    properly installed, bare `cgate` goes back to printing help, exactly
+    as before.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    if maybe_auto_install():
+        return
+    typer.echo(ctx.get_help())
 
 
 def main() -> None:
