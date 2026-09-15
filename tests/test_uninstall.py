@@ -260,6 +260,65 @@ def test_uninstall_binary_kills_other_blocker_and_retries(
     assert attempts["count"] == 2
 
 
+def test_uninstall_binary_removes_sibling_helper_once_unlocked(
+    runner: CliRunner, isolated_env: dict
+) -> None:
+    """Once cgate.exe is actually gone (no self-lock), the orphaned
+    cgate-helper.exe next to it should be cleaned up too -- it's an
+    implementation detail the user never installed by hand."""
+    binary = isolated_env["binary"]
+    helper = binary.with_name("cgate-helper.exe")
+    helper.write_bytes(b"helper binary")
+
+    result = runner.invoke(app, ["uninstall", "--binary", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert not binary.exists()
+    assert not helper.exists()
+
+
+def test_uninstall_binary_defers_helper_cleanup_when_helper_still_locked(
+    runner: CliRunner, isolated_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the helper file can't be unlinked directly (most likely
+    because it's the very process performing a deferred delete of
+    cgate.exe right now), fall back to the cmd.exe shell-chain instead of
+    failing or leaving it there silently."""
+    binary = isolated_env["binary"]
+    helper = binary.with_name("cgate-helper.exe")
+    helper.write_bytes(b"helper binary")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    # append_log resolves data_dir() at call time -- without this, the
+    # (mocked) successful helper dispatch for the main binary writes a
+    # real line to the machine's actual update.log.
+    monkeypatch.setattr("cgate.core.paths.data_dir", lambda: isolated_env["data"])
+    monkeypatch.setattr("cgate.cli.uninstall.find_blocking_processes", lambda *a, **k: [])
+    monkeypatch.setattr("cgate.cli.uninstall.ensure_helper_binary", lambda *a, **k: helper)
+    monkeypatch.setattr("cgate.cli.uninstall.spawn_helper", lambda *a, **k: True)
+    fallback_calls: list[Path] = []
+    monkeypatch.setattr(
+        "cgate.cli.uninstall._spawn_delayed_delete",
+        lambda target: fallback_calls.append(target) or True,
+    )
+
+    real_unlink = Path.unlink
+
+    def fake_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self == binary:
+            raise PermissionError(13, "locked", str(self))
+        if self == helper:
+            raise PermissionError(13, "locked", str(self))
+        real_unlink(self, *args, **kwargs)
+
+    with patch.object(Path, "unlink", fake_unlink):
+        result = runner.invoke(app, ["uninstall", "--binary", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert fallback_calls == [helper]
+    assert helper.exists()  # cleanup is deferred to the (mocked) shell-chain
+
+
 def test_uninstall_binary_skips_when_not_frozen(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:

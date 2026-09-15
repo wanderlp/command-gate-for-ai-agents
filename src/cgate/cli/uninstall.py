@@ -25,6 +25,7 @@ from cgate.update import (
     ensure_helper_binary,
     find_blocking_processes,
     find_mcp_serving_pids,
+    helper_binary_path,
     kill_process,
     spawn_helper,
 )
@@ -269,6 +270,7 @@ def _uninstall_binary(binary_path: Path | None, yes: bool) -> str:
     try:
         binary_path.unlink()
         console.print(f"  Removed [bold]{binary_path}[/bold].")
+        _cleanup_helper_binary(binary_path)
         return "removed"
     except OSError as exc:
         if sys.platform != "win32":
@@ -311,6 +313,7 @@ def _uninstall_binary(binary_path: Path | None, yes: bool) -> str:
         try:
             binary_path.unlink()
             console.print(f"  Removed [bold]{binary_path}[/bold].")
+            _cleanup_helper_binary(binary_path)
             return "removed"
         except OSError:
             pass  # still locked (likely by us) -- fall through below
@@ -321,6 +324,7 @@ def _uninstall_binary(binary_path: Path | None, yes: bool) -> str:
             "process. It will be deleted automatically a few seconds "
             "after this command exits -- no further action needed."
         )
+        _cleanup_helper_binary(binary_path)
         return "deferred"
 
     console.print(
@@ -329,6 +333,28 @@ def _uninstall_binary(binary_path: Path | None, yes: bool) -> str:
     )
     console.print(f'  [dim]Close cgate and delete manually: del "{binary_path}"[/dim]')
     return "failed"
+
+
+def _cleanup_helper_binary(binary_path: Path) -> None:
+    """Best-effort removal of the sibling ``cgate-helper.exe``.
+
+    Called once the main binary is gone or on its way out. Never raises
+    and never affects the overall uninstall outcome -- this is
+    disk-clutter cleanup (the helper is an implementation detail the
+    user never installed by hand), not core functionality. If the helper
+    is still in use -- most likely because it's the very process
+    performing a deferred delete of ``binary_path`` right now -- fall
+    back to the ``cmd.exe`` shell-chain instead of another compiled
+    helper: ``cmd.exe`` isn't a PyInstaller ``--onefile`` binary, so it
+    has no self-lock problem to solve for a second time.
+    """
+    helper = helper_binary_path(binary_path)
+    if not helper.exists():
+        return
+    try:
+        helper.unlink()
+    except OSError:
+        _spawn_delayed_delete(helper)
 
 
 def _delete_via_helper_or_fallback(target: Path, *, wait_pids: list[int]) -> bool:
