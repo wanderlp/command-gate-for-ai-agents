@@ -1,8 +1,8 @@
-"""Best-effort append-only logging for ``cgate update apply``.
+"""Best-effort append-only logging for background update/uninstall operations.
 
-Lives in its own module so it can be imported without dragging in the
-rest of ``cgate.cli`` (helpful for tests and for callers that only
-need to write a log line).
+Lives in ``cgate.core`` (not ``cgate.cli``) because it's shared by the
+interactive CLI and the non-interactive ``cgate.helper`` binary, which must
+not import anything from ``cgate.cli`` (typer/rich/mcp/paramiko/pywinrm).
 """
 
 from __future__ import annotations
@@ -18,13 +18,13 @@ def append_log(message: str) -> None:
     """Append a timestamped line to ``<data_dir>/update.log``. Never raises.
 
     Best-effort: any failure (permission denied, missing dir, encoding
-    errors) is silently swallowed. Logging must never crash the caller
-    -- in particular, the helper process that runs after the main
-    cgate process has exited has no other way to surface failure.
+    errors) is silently swallowed. Logging must never crash the caller --
+    in particular, the helper process that runs after the main cgate
+    process has exited has no other way to surface failure.
 
     Uses ``cgate.core.paths.data_dir`` (attribute lookup at call time)
-    rather than a module-level import so tests can monkeypatch the
-    data directory location.
+    rather than a module-level import so tests can monkeypatch the data
+    directory location.
     """
     try:
         log_path = cgate.core.paths.data_dir() / _LOG_FILENAME

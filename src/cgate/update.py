@@ -115,10 +115,7 @@ def _resolve_repo() -> str:
     return REPO
 
 
-def fetch_latest_release(repo: str | None = None) -> Release:
-    """Fetch the latest published GitHub Release via the public API."""
-    repo = repo or _resolve_repo()
-    url = f"{GITHUB_API}/repos/{repo}/releases/latest"
+def _fetch_release(url: str) -> Release:
     request = urllib.request.Request(  # noqa: S310 -- URL is fixed to the HTTPS GitHub API.
         url, headers={"Accept": "application/vnd.github+json"}
     )
@@ -137,6 +134,25 @@ def fetch_latest_release(repo: str | None = None) -> Release:
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         msg = f"malformed release JSON: {exc}"
         raise UpdateError(msg) from exc
+
+
+def fetch_latest_release(repo: str | None = None) -> Release:
+    """Fetch the latest published GitHub Release via the public API."""
+    repo = repo or _resolve_repo()
+    return _fetch_release(f"{GITHUB_API}/repos/{repo}/releases/latest")
+
+
+def fetch_release_by_tag(tag: str, repo: str | None = None) -> Release:
+    """Fetch one specific GitHub Release by tag, rather than the latest.
+
+    Used to pair the helper binary (see ``ensure_helper_binary``) with the
+    currently *installed* cgate version when there's no in-flight
+    ``Release`` object already in hand to reuse -- e.g. ``uninstall
+    --binary``, which isn't installing anything and so has no natural
+    "the release we're applying" to point at.
+    """
+    repo = repo or _resolve_repo()
+    return _fetch_release(f"{GITHUB_API}/repos/{repo}/releases/tags/{tag}")
 
 
 def _parse_release(data: _ReleasePayload) -> Release:
@@ -172,6 +188,94 @@ def _platform_suffix() -> str:
             return "macos-arm64"
         case _:
             return "linux-x86_64"
+
+
+HELPER_EXECUTABLE_NAME: Final = "cgate-helper.exe"
+_HELPER_ASSET_NAME: Final = "cgate-helper-windows-amd64.exe"
+
+
+def select_helper_asset(release: Release) -> Asset | None:
+    """Pick the Windows helper-binary asset from a release, if it has one.
+
+    Windows-only concept -- POSIX never self-locks, so no helper ships for
+    those platforms. Can't reuse ``select_asset``/``Asset.suffix`` here:
+    stripping the ``"cgate-"`` prefix from ``"cgate-helper-windows-amd64.exe"``
+    yields ``"helper-windows-amd64.exe"``, which won't match
+    ``_platform_suffix()``. Returns ``None`` (not an error) for an older
+    release published before this feature shipped a helper asset.
+    """
+    if sys.platform != "win32":
+        return None
+    return next((asset for asset in release.assets if asset.name == _HELPER_ASSET_NAME), None)
+
+
+def helper_binary_path(binary: Path) -> Path:
+    """Return where the compiled helper should live, next to ``binary``."""
+    return binary.with_name(HELPER_EXECUTABLE_NAME)
+
+
+def spawn_helper(helper: Path, *args: str) -> bool:
+    """Launch the compiled helper, detached, to run after this process exits.
+
+    Same detachment flags as the ``cmd.exe`` shell-chain fallback in
+    ``cli/update.py``/``cli/uninstall.py``: DETACHED_PROCESS |
+    CREATE_NO_WINDOW so the helper survives this process exiting and never
+    flashes a console window.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        subprocess.Popen(
+            [str(helper), *args],
+            creationflags=0x00000008 | 0x08000000,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return True
+
+
+def ensure_helper_binary(binary: Path, release: Release | None = None) -> Path | None:
+    """Return a working local helper binary, downloading it on demand.
+
+    Reuses ``release`` -- the exact release ``update apply`` is installing
+    -- when given, so the helper is always paired with the cgate version
+    it's swapping in. With no release in hand (``uninstall --binary`` isn't
+    installing anything), falls back to fetching the release matching the
+    *currently installed* version, keeping the same same-tag pairing
+    principle rather than silently reaching for "latest".
+
+    Best-effort and never raises: returns ``None`` on anything short of a
+    verified, usable binary (old release with no helper asset, network
+    failure, failed attestation) so callers can fall back to the existing
+    shell-chain mechanism instead.
+    """
+    if sys.platform != "win32":
+        return None
+    path = helper_binary_path(binary)
+    if path.exists():
+        return path
+
+    try:
+        resolved = release or fetch_release_by_tag(f"v{_cgate_version()}")
+        asset = select_helper_asset(resolved)
+        if asset is None:
+            return None
+        staging = path.with_name(path.name + ".new")
+        download_to(asset, staging)
+        verify_attestation(asset, resolved)
+        _ = staging.replace(path)
+    except (UpdateError, OSError):
+        return None
+    return path
+
+
+def _cgate_version() -> str:
+    from cgate import __version__  # noqa: PLC0415 -- avoid a module-load-order cycle
+
+    return __version__
 
 
 def compare_versions(current: str, latest: str) -> int:
