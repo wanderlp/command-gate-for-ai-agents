@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -258,16 +259,26 @@ def ensure_helper_binary(binary: Path, release: Release | None = None) -> Path |
     if path.exists():
         return path
 
+    # Computed before the try so the except below can always clean it up,
+    # including on a fetch_release_by_tag/select_helper_asset failure that
+    # happens before it would otherwise be assigned.
+    staging = path.with_name(path.name + ".new")
     try:
         resolved = release or fetch_release_by_tag(f"v{_cgate_version()}")
         asset = select_helper_asset(resolved)
         if asset is None:
             return None
-        staging = path.with_name(path.name + ".new")
         download_to(asset, staging)
         verify_attestation(asset, resolved)
         _ = staging.replace(path)
     except (UpdateError, OSError):
+        # A verified download and rename is all-or-nothing -- a failure
+        # partway (attestation rejected, AV locks the rename) must not
+        # leave a multi-MB `cgate-helper.exe.new` behind silently, the
+        # same orphan-staging-file class of bug issue #15 fixed for the
+        # main binary's own `.new` file.
+        with contextlib.suppress(OSError):
+            staging.unlink(missing_ok=True)
         return None
     return path
 

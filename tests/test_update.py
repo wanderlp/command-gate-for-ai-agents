@@ -808,11 +808,15 @@ def test_ensure_helper_binary_returns_none_on_download_failure(
         result = ensure_helper_binary(tmp_path / "cgate.exe", release=release)
 
     assert result is None
+    assert not (tmp_path / "cgate-helper.exe.new").exists()
 
 
 def test_ensure_helper_binary_returns_none_on_failed_attestation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """A downloaded-but-unverified helper must not leave its multi-MB
+    `.new` staging file behind -- the same orphan-file class of bug
+    issue #15 fixed for the main binary's own staging file."""
     monkeypatch.setattr(sys, "platform", "win32")
     asset = Asset("cgate-helper-windows-amd64.exe", "https://x/helper", 1, "")
     release = Release("v9.9.9", "9.9.9", "https://x", (asset,))
@@ -827,3 +831,31 @@ def test_ensure_helper_binary_returns_none_on_failed_attestation(
         result = ensure_helper_binary(tmp_path / "cgate.exe", release=release)
 
     assert result is None
+    assert not (tmp_path / "cgate-helper.exe.new").exists()
+
+
+def test_ensure_helper_binary_returns_none_on_replace_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same orphan-cleanup guarantee when the final rename onto the
+    target path itself fails (e.g. antivirus briefly locks the fresh
+    download)."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    asset = Asset("cgate-helper-windows-amd64.exe", "https://x/helper", 1, "")
+    release = Release("v9.9.9", "9.9.9", "https://x", (asset,))
+
+    def fake_download_to(_asset: Asset, dest: Path) -> None:
+        dest.write_bytes(b"bytes")
+
+    def fake_replace(self: Path, _target: Path) -> Path:  # noqa: ARG001
+        raise OSError(13, "locked")
+
+    with (
+        patch("cgate.update.download_to", side_effect=fake_download_to),
+        patch("cgate.update.verify_attestation"),
+        patch.object(Path, "replace", fake_replace),
+    ):
+        result = ensure_helper_binary(tmp_path / "cgate.exe", release=release)
+
+    assert result is None
+    assert not (tmp_path / "cgate-helper.exe.new").exists()
