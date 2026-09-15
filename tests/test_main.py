@@ -43,7 +43,7 @@ def test_bare_invocation_shows_help_when_nothing_to_auto_install(
 ) -> None:
     """dev mode / already-installed: maybe_auto_install returns False, so a
     bare `cgate` falls through to the same help it always showed."""
-    monkeypatch.setattr("cgate.cli.main.maybe_auto_install", lambda: False)
+    monkeypatch.setattr("cgate.cli.main.maybe_auto_install", lambda **_kw: False)
 
     result = CliRunner().invoke(app, [])
 
@@ -56,7 +56,7 @@ def test_bare_invocation_skips_help_when_auto_install_ran(
 ) -> None:
     """A fresh download: maybe_auto_install handles everything and returns
     True, so root() must not also print the generic help text."""
-    monkeypatch.setattr("cgate.cli.main.maybe_auto_install", lambda: True)
+    monkeypatch.setattr("cgate.cli.main.maybe_auto_install", lambda **_kw: True)
 
     result = CliRunner().invoke(app, [])
 
@@ -64,12 +64,29 @@ def test_bare_invocation_skips_help_when_auto_install_ran(
     assert "Usage:" not in result.stdout
 
 
+def test_unattended_flag_is_passed_through_to_auto_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: dict = {}
+
+    def fake_maybe_auto_install(*, unattended: bool = False) -> bool:
+        received["unattended"] = unattended
+        return True
+
+    monkeypatch.setattr("cgate.cli.main.maybe_auto_install", fake_maybe_auto_install)
+
+    result = CliRunner().invoke(app, ["--unattended"])
+
+    assert result.exit_code == 0, result.stdout
+    assert received == {"unattended": True}
+
+
 def test_version_flag_never_triggers_auto_install(monkeypatch: pytest.MonkeyPatch) -> None:
     """--version's eager callback must exit before root()'s body -- and
     therefore before maybe_auto_install -- ever runs."""
     calls: list[None] = []
     monkeypatch.setattr(
-        "cgate.cli.main.maybe_auto_install", lambda: calls.append(None) or False
+        "cgate.cli.main.maybe_auto_install", lambda **_kw: calls.append(None) or False
     )
 
     result = CliRunner().invoke(app, ["--version"])
@@ -86,7 +103,7 @@ def test_real_subcommand_never_triggers_auto_install(
     monkeypatch.setenv("CGATE_DB_PATH", str(tmp_path / "cgate.db"))
     calls: list[None] = []
     monkeypatch.setattr(
-        "cgate.cli.main.maybe_auto_install", lambda: calls.append(None) or False
+        "cgate.cli.main.maybe_auto_install", lambda **_kw: calls.append(None) or False
     )
 
     result = CliRunner().invoke(app, ["connections", "list"])

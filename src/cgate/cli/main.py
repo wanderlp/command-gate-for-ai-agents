@@ -49,6 +49,18 @@ def root(
             help="Show version and exit.",
         ),
     ] = False,
+    unattended: Annotated[
+        bool,
+        typer.Option(
+            "--unattended",
+            help=(
+                "For first-run auto-install only: skip the 'Press Enter to "
+                "close' pause and exit immediately once done. No prompts "
+                "happen either way -- this only controls the pause, for "
+                "scripted/silent deployment."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Display help or route to a command group.
 
@@ -62,7 +74,7 @@ def root(
     """
     if ctx.invoked_subcommand is not None:
         return
-    if maybe_auto_install():
+    if maybe_auto_install(unattended=unattended):
         return
     typer.echo(ctx.get_help())
 

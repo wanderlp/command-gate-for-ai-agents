@@ -229,3 +229,31 @@ def test_maybe_auto_install_reports_no_clients_detected(
     maybe_auto_install()
 
     assert "No IA clients detected yet" in capsys.readouterr().out
+
+
+def test_maybe_auto_install_unattended_skips_the_pause(
+    isolated_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("cgate.cli.install.detect_clients", list)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    waited: list[bool] = []
+    monkeypatch.setattr("cgate.cli.install.wait_for_enter", lambda: waited.append(True))
+
+    result = maybe_auto_install(unattended=True)
+
+    assert result is True
+    assert waited == []
+
+
+def test_maybe_auto_install_pauses_when_interactive_and_not_unattended(
+    isolated_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("cgate.cli.install.detect_clients", list)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    waited: list[bool] = []
+    monkeypatch.setattr("cgate.cli.install.wait_for_enter", lambda: waited.append(True))
+
+    result = maybe_auto_install(unattended=False)
+
+    assert result is True
+    assert waited == [True]

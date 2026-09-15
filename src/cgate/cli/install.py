@@ -141,7 +141,7 @@ def install_cmd() -> None:
     console.print("\nNext: run [bold]cgate mcp install[/bold] to register with your AI clients.")
 
 
-def maybe_auto_install() -> bool:
+def maybe_auto_install(*, unattended: bool = False) -> bool:
     """Run automatically when cgate is invoked with no arguments at all.
 
     A binary just downloaded and double-clicked (or run bare from a
@@ -152,6 +152,12 @@ def maybe_auto_install() -> bool:
     it did this (the caller should not also print help); False when
     there was nothing to auto-install (dev mode, or already properly
     installed), in which case the caller falls through to normal help.
+
+    ``unattended`` skips the "Press Enter to close" pause at the end
+    (there are no prompts to skip either way -- this path never has
+    any) so a scripted/silent deployment (``cgate-windows-amd64.exe
+    --unattended``) runs start to finish and exits on its own, instead
+    of waiting on a keypress nobody is there to send.
     """
     result = _current_source_and_target()
     if result is None:
@@ -170,7 +176,7 @@ def maybe_auto_install() -> bool:
         "  2. Restart your AI client (Claude Code / opencode / Cursor) to load "
         "the new MCP server."
     )
-    if should_pause(no_pause=False):
+    if should_pause(no_pause=unattended):
         console.print()
         wait_for_enter()
     return True
