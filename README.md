@@ -21,18 +21,17 @@ anything, unsupervised."
 - **Drops into the AI tools you already use.** Registers itself as an MCP server for
   Claude Code, opencode, Cursor, and other MCP-compatible clients.
 - **One binary, nothing to configure.** Ships as a single executable per platform —
-  download it, run one install command, done.
+  download it and run it, done.
 
 ## Get started
 
 1. Download the binary for your platform from the
    [latest release](https://github.com/wanderlp/command-gate-for-ai-agents/releases/latest).
-2. Run it once with `install` (e.g. `.\cgate-windows-amd64.exe install`) — it copies
-   itself into a per-user bin directory and adds that directory to your `PATH`. No
-   admin/sudo needed.
-3. Open a new terminal, then run `cgate mcp install` — it finds your installed AI
-   clients and registers itself as an MCP server for the ones you confirm.
-4. Restart your AI client. Done.
+2. Run it (double-click it, or just `.\cgate-windows-amd64.exe` from the folder you
+   downloaded it to). On first run it installs itself into a per-user bin directory,
+   adds that directory to your `PATH`, and registers with any AI clients it finds —
+   no admin/sudo, no flags to remember.
+3. Open a new terminal and restart your AI client. Done.
 
 From there, `cgate watch` opens a live approval queue: agent proposals show up as they
 come in, you approve or reject with a keypress, and the result streams back to the

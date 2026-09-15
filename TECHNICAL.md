@@ -11,43 +11,42 @@ project is and why it exists.
 ### Windows
 
 1. Download `cgate-windows-amd64.exe` from the [latest release](https://github.com/wanderlp/command-gate-for-ai-agents/releases/latest).
-2. From the folder you downloaded it to:
-
-   ```powershell
-   .\cgate-windows-amd64.exe install
-   ```
-
-   Copies itself into `%USERPROFILE%\bin\cgate.exe` and adds that directory to your
-   user-level `PATH` (via `HKEY_CURRENT_USER\Environment` — no admin rights needed).
-   Safe to run more than once: already-installed and already-on-PATH are both
-   detected and reported, not redone.
+2. Run it — double-click it, or `.\cgate-windows-amd64.exe` from the folder you
+   downloaded it to, with no arguments. A completely bare invocation of a binary
+   that isn't installed yet triggers first-run setup automatically: it copies itself
+   into `%USERPROFILE%\bin\cgate.exe`, adds that directory to your user-level `PATH`
+   (via `HKEY_CURRENT_USER\Environment` — no admin rights needed), and registers
+   with every IA client (Claude Code, opencode, Cursor) it finds, all with no
+   prompts. Pauses for Enter before closing so a double-click launch's console
+   window doesn't vanish before you've read the summary.
 3. Open a new terminal (PATH changes to already-open shells don't take effect until
-   restarted), then:
+   restarted) and restart your IA client. Done — Claude Code now exposes
+   `propose_command`, `list_connections`, and `check_status` as tools it can call.
 
-   ```powershell
-   cgate mcp install
-   ```
-
-   This detects installed IA clients (Claude Code, opencode, Cursor) and registers
-   `cgate` as an MCP server for each one you confirm.
-4. Restart your IA client. Done — Claude Code now exposes `propose_command`,
-   `list_connections`, and `check_status` as tools it can call.
+Once installed, plain `cgate` goes back to showing help, exactly like any other CLI
+— the automatic first-run behavior only fires for a genuinely fresh download. Later,
+`cgate mcp install` re-registers (or registers a client you installed afterward)
+with its normal confirm-per-client prompts.
 
 ### macOS / Linux
 
 Same flow — download `cgate-macos-arm64` or `cgate-linux-x86_64` from the
 [latest release](https://github.com/wanderlp/command-gate-for-ai-agents/releases/latest),
-`chmod +x` it, then run `./cgate-<platform> install`. Copies itself into
-`~/.local/bin/cgate` and adds that directory to your `PATH` by appending an export
-line to your shell's rc file (`~/.zshrc`, `~/.bashrc`, `~/.config/fish/config.fish`,
-or `~/.profile` as a fallback — detected from `$SHELL`, best-effort: it won't find
-every possible shell setup, e.g. a classic macOS bash profile that only sources
-`~/.bash_profile`). Open a new terminal (or `source` the rc file it names) before
-running `cgate mcp install`.
+`chmod +x` it, then run it (`./cgate-<platform>`) with no arguments. First-run setup
+copies itself into `~/.local/bin/cgate` and adds that directory to your `PATH` by
+appending an export line to your shell's rc file (`~/.zshrc`, `~/.bashrc`,
+`~/.config/fish/config.fish`, or `~/.profile` as a fallback — detected from `$SHELL`,
+best-effort: it won't find every possible shell setup, e.g. a classic macOS bash
+profile that only sources `~/.bash_profile`), then registers with every IA client it
+finds. Open a new terminal (or `source` the rc file it names) and restart your IA
+client afterward.
 
-`install` only handles first-time setup. If something already exists at the target
-path, it leaves it alone and points you at `cgate update apply` instead — use that
-to update an existing install, not `install`.
+First-run setup only handles first-time setup, on purpose: if something already
+exists at the install path, it leaves it alone (bare `cgate` just shows help, same
+as any properly-installed copy) rather than silently overwriting it — use
+`cgate update apply` to update an existing install instead. The explicit
+`cgate install` subcommand still exists too, for scripting or re-running just the
+copy-and-PATH step on its own (it doesn't chain into MCP registration or pause).
 
 ### Via package manager
 
@@ -109,7 +108,7 @@ Phase 1 complete: end-to-end propose → approve → execute → audit loop work
 plus a round of security/robustness hardening (host key verification, TLS
 validation, DB race-condition fixes, GitHub Actions build-provenance
 attestation verification on self-update, and more).
-272 unit/integration tests pass; ruff + basedpyright pass with a handful of
+281 unit/integration tests pass; ruff + basedpyright pass with a handful of
 accepted pre-existing findings (no known bugs, just style/complexity debt).
 
 ## Development
