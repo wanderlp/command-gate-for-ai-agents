@@ -16,14 +16,17 @@ from rich.console import Console
 from cgate.connections.auth import remove_credential
 from cgate.connections.store import ConnectionsRepo
 from cgate.core.paths import data_dir, db_path
+from cgate.core.update_log import append_log
 from cgate.db.connection import Database, init_database
 from cgate.db.types import Connection
 from cgate.mcp_installer import ClientInstall, detect_clients, is_registered, unregister
 from cgate.update import (
     current_binary_path,
+    ensure_helper_binary,
     find_blocking_processes,
     find_mcp_serving_pids,
     kill_process,
+    spawn_helper,
 )
 
 # Brief delay after killing a blocking process so Windows releases the file
@@ -312,7 +315,7 @@ def _uninstall_binary(binary_path: Path | None, yes: bool) -> str:
         except OSError:
             pass  # still locked (likely by us) -- fall through below
 
-    if _spawn_delayed_delete(binary_path):
+    if _delete_via_helper_or_fallback(binary_path, wait_pids=[self_pid]):
         console.print(
             f"  [yellow]{binary_path}[/yellow] is locked by this running "
             "process. It will be deleted automatically a few seconds "
@@ -326,6 +329,25 @@ def _uninstall_binary(binary_path: Path | None, yes: bool) -> str:
     )
     console.print(f'  [dim]Close cgate and delete manually: del "{binary_path}"[/dim]')
     return "failed"
+
+
+def _delete_via_helper_or_fallback(target: Path, *, wait_pids: list[int]) -> bool:
+    """Prefer the compiled ``cgate-helper.exe`` to delete ``target``.
+
+    Falls back to the ``cmd.exe`` shell-chain when it isn't available or
+    fails to spawn. There's no in-flight ``Release`` here (unlike
+    ``update apply``, this isn't installing anything), so
+    ``ensure_helper_binary`` pairs the helper with the *currently
+    installed* version's own release tag instead of "latest".
+    """
+    helper = ensure_helper_binary(target)
+    if helper is not None:
+        wait_args = [arg for pid in wait_pids for arg in ("--wait-pid", str(pid))]
+        if spawn_helper(helper, "delete", "--target", str(target), *wait_args):
+            append_log(f"uninstall --binary: dispatched compiled helper {helper} for {target}")
+            return True
+        append_log("uninstall --binary: compiled helper spawn failed, falling back to shell-chain")
+    return _spawn_delayed_delete(target)
 
 
 def _spawn_delayed_delete(target: Path) -> bool:
