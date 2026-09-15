@@ -10,6 +10,7 @@ from rich.console import Console
 
 from cgate import __version__
 from cgate.cli.connections import connections_app
+from cgate.cli.install import install_cmd
 from cgate.cli.mcp import mcp_app
 from cgate.cli.uninstall import uninstall_cmd
 from cgate.cli.update import update_app
@@ -25,6 +26,7 @@ app.add_typer(connections_app, name="connections")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(update_app, name="update")
 app.add_typer(watch_app, name="watch")
+app.command("install")(install_cmd)
 app.command("uninstall")(uninstall_cmd)
 
 

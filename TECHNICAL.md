@@ -11,8 +11,18 @@ project is and why it exists.
 ### Windows
 
 1. Download `cgate-windows-amd64.exe` from the [latest release](https://github.com/wanderlp/command-gate-for-ai-agents/releases/latest).
-2. Move it somewhere on your `PATH` (e.g., `C:\Users\<you>\bin\`).
-3. From any shell:
+2. From the folder you downloaded it to:
+
+   ```powershell
+   .\cgate-windows-amd64.exe install
+   ```
+
+   Copies itself into `%USERPROFILE%\bin\cgate.exe` and adds that directory to your
+   user-level `PATH` (via `HKEY_CURRENT_USER\Environment` — no admin rights needed).
+   Safe to run more than once: already-installed and already-on-PATH are both
+   detected and reported, not redone.
+3. Open a new terminal (PATH changes to already-open shells don't take effect until
+   restarted), then:
 
    ```powershell
    cgate mcp install
@@ -27,7 +37,17 @@ project is and why it exists.
 
 Same flow — download `cgate-macos-arm64` or `cgate-linux-x86_64` from the
 [latest release](https://github.com/wanderlp/command-gate-for-ai-agents/releases/latest),
-`chmod +x` it, move it to `~/.local/bin` or another `PATH` directory.
+`chmod +x` it, then run `./cgate-<platform> install`. Copies itself into
+`~/.local/bin/cgate` and adds that directory to your `PATH` by appending an export
+line to your shell's rc file (`~/.zshrc`, `~/.bashrc`, `~/.config/fish/config.fish`,
+or `~/.profile` as a fallback — detected from `$SHELL`, best-effort: it won't find
+every possible shell setup, e.g. a classic macOS bash profile that only sources
+`~/.bash_profile`). Open a new terminal (or `source` the rc file it names) before
+running `cgate mcp install`.
+
+`install` only handles first-time setup. If something already exists at the target
+path, it leaves it alone and points you at `cgate update apply` instead — use that
+to update an existing install, not `install`.
 
 ### Via package manager
 
@@ -89,7 +109,7 @@ Phase 1 complete: end-to-end propose → approve → execute → audit loop work
 plus a round of security/robustness hardening (host key verification, TLS
 validation, DB race-condition fixes, GitHub Actions build-provenance
 attestation verification on self-update, and more).
-242 unit/integration tests pass; ruff + basedpyright pass with a handful of
+272 unit/integration tests pass; ruff + basedpyright pass with a handful of
 accepted pre-existing findings (no known bugs, just style/complexity debt).
 
 ## Development
@@ -124,7 +144,7 @@ uv run python scripts/build-binary.py --name=cgate-helper --entry=src/cgate/help
 src/cgate/
 ├── cli/          # Top-level CLI: connections, mcp, update, watch
 ├── connections/  # Saved server connections + WinRM/SSH detection + keyring auth
-├── core/         # Shared paths and primitives
+├── core/         # Shared paths, primitives, and install/PATH registration
 ├── db/           # Local SQLite persistence (batches, commands, connections)
 ├── executor/     # WinRM and SSH execution
 ├── helper/       # Standalone cgate-helper.exe: Windows-only file swap for self-update
