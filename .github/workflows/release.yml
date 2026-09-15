@@ -59,6 +59,27 @@ jobs:
           name: "${{ matrix.asset }}"
           path: "dist/${{ matrix.asset }}"
           if-no-files-found: "error"
+      # Windows-only companion binary: performs the actual file swap/delete
+      # for `update apply` / `uninstall --binary` from a process that never
+      # shares an image name with cgate.exe, so there's nothing to
+      # disambiguate on Windows's process list (see src/cgate/helper/).
+      - name: "Build helper binary"
+        if: "matrix.os == 'windows-latest'"
+        run: >-
+          uv run python scripts/build-binary.py --name=cgate-helper
+          --entry=src/cgate/helper/__main__.py --minimal
+      - name: "Attest helper build provenance"
+        if: "matrix.os == 'windows-latest'"
+        uses: "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be" # v2.4.0
+        with:
+          subject-path: "dist/cgate-helper-windows-amd64.exe"
+      - name: "Upload helper binary artifact"
+        if: "matrix.os == 'windows-latest'"
+        uses: "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" # v4.6.2
+        with:
+          name: "cgate-helper-windows-amd64.exe"
+          path: "dist/cgate-helper-windows-amd64.exe"
+          if-no-files-found: "error"
 
   release:
     name: "Publish GitHub Release"
@@ -80,4 +101,5 @@ jobs:
             cgate-windows-amd64.exe
             cgate-macos-arm64
             cgate-linux-x86_64
+            cgate-helper-windows-amd64.exe
           fail_on_unmatched_files: true
