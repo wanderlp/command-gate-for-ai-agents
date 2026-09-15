@@ -115,7 +115,7 @@ On Windows, build the companion helper binary the same way (see "Self-update
 on Windows" below):
 
 ```console
-uv run python scripts/build-binary.py --name=cgate-helper --entry=src/cgate/helper/__main__.py --minimal
+uv run python scripts/build-binary.py --name=cgate-helper --entry=src/cgate/helper/__main__.py --minimal --windowed
 ```
 
 ## Layout
@@ -152,3 +152,12 @@ delayed swap/delete, same as before. Either way, a version upgrading *from*
 a build that predates this feature still needs one manual recovery step the
 first time, since the code making that decision at that moment is the old
 binary — a one-time bootstrap cost.
+
+`cgate-helper.exe` is built with `--windowed` (a GUI-subsystem binary), not
+`--console`. A console-subsystem `--onefile` build still briefly flashes a
+blank console window when launched detached: only the *outer* bootloader
+process is covered by the launcher's `CREATE_NO_WINDOW` flag, but that
+bootloader spawns its own internal child to actually run the Python code
+(same parent/child pattern `cgate.exe` itself has), and that spawn isn't
+covered by anyone's creation flags. A GUI-subsystem binary never gets a
+console at any level of that process tree, so there's nothing to flash.

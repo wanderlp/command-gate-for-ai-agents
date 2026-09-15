@@ -67,7 +67,7 @@ jobs:
         if: "matrix.os == 'windows-latest'"
         run: >-
           uv run python scripts/build-binary.py --name=cgate-helper
-          --entry=src/cgate/helper/__main__.py --minimal
+          --entry=src/cgate/helper/__main__.py --minimal --windowed
       - name: "Attest helper build provenance"
         if: "matrix.os == 'windows-latest'"
         uses: "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be" # v2.4.0

@@ -44,7 +44,53 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="Skip the main CLI's --collect-all/--hidden-import flags.",
     )
+    parser.add_argument(
+        "--windowed",
+        action="store_true",
+        help=(
+            "Build a GUI-subsystem (console-less) executable. Needed for "
+            "cgate-helper.exe: a console-subsystem PyInstaller --onefile "
+            "binary still briefly flashes a blank console window when "
+            "launched detached, because its bootloader's own internal "
+            "child spawn isn't covered by the launcher's CREATE_NO_WINDOW "
+            "flag -- only the outer bootloader process is. A GUI-subsystem "
+            "binary never gets a console at any level of that process "
+            "tree, so this needs no creation-flag workaround."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def _pyinstaller_command(args: argparse.Namespace, *, workpath: Path, specpath: Path) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--onefile",
+        f"--name={args.name}",
+        "--clean",
+        "--noconfirm",
+        f"--distpath={DIST_DIR}",
+        f"--workpath={workpath / 'build'}",
+        f"--specpath={specpath}",
+        f"--paths={PROJECT_ROOT / 'src'}",
+    ]
+    if args.windowed:
+        command.append("--windowed")
+    if not args.minimal:
+        command += [
+            "--collect-all=keyring",
+            "--collect-all=mcp",
+            "--collect-all=paramiko",
+            "--collect-all=pywinrm",
+            "--collect-all=rich",
+            "--hidden-import=cgate.cli.connections",
+            "--hidden-import=cgate.cli.mcp",
+            "--hidden-import=cgate.cli.watch",
+            "--hidden-import=cgate.mcp_server",
+        ]
+    command.append(str(args.entry))
+    return command
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -78,32 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     specpath.mkdir(parents=True, exist_ok=True)
     DIST_DIR.mkdir(parents=True, exist_ok=True)
 
-    command = [
-        sys.executable,
-        "-m",
-        "PyInstaller",
-        "--onefile",
-        f"--name={args.name}",
-        "--clean",
-        "--noconfirm",
-        f"--distpath={DIST_DIR}",
-        f"--workpath={workpath / 'build'}",
-        f"--specpath={specpath}",
-        f"--paths={PROJECT_ROOT / 'src'}",
-    ]
-    if not args.minimal:
-        command += [
-            "--collect-all=keyring",
-            "--collect-all=mcp",
-            "--collect-all=paramiko",
-            "--collect-all=pywinrm",
-            "--collect-all=rich",
-            "--hidden-import=cgate.cli.connections",
-            "--hidden-import=cgate.cli.mcp",
-            "--hidden-import=cgate.cli.watch",
-            "--hidden-import=cgate.mcp_server",
-        ]
-    command.append(str(args.entry))
+    command = _pyinstaller_command(args, workpath=workpath, specpath=specpath)
 
     try:
         version_step = subprocess.run(
