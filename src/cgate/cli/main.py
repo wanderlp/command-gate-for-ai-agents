@@ -15,6 +15,7 @@ from cgate.cli.mcp import mcp_app
 from cgate.cli.uninstall import uninstall_cmd
 from cgate.cli.update import update_app
 from cgate.cli.watch import watch_app
+from cgate.update import maybe_heal_pending_update
 
 app = typer.Typer(
     name="cgate",
@@ -89,7 +90,14 @@ def main() -> None:
     message (issue #12). This is the entry point PyInstaller's bundled
     binary and the pip console-script both call, so it covers every
     command without needing its own try/except.
+
+    Before dispatching the command, attempt to self-heal a staged update
+    left behind by a previous failed ``update apply``: if ``<binary>.new``
+    is on disk and no other ``cgate.exe`` is alive, we spawn the helper
+    (detached, waiting on our PID) so the swap completes the moment we
+    exit. Fire-and-forget, silent on any condition that prevents it.
     """
+    maybe_heal_pending_update()
     try:
         app()
     except sqlite3.Error as exc:

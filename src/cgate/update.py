@@ -18,6 +18,8 @@ from packaging.version import InvalidVersion, Version
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NotRequired, TypedDict
 
+from cgate.core.update_log import append_log
+
 if TYPE_CHECKING:
     from sigstore.verify import Verifier
     from sigstore.verify.policy import VerificationPolicy
@@ -668,3 +670,44 @@ def current_binary_path() -> Path | None:
     """Return the running cgate binary path, or ``None`` in development mode."""
     executable = Path(sys.executable).resolve()
     return executable if executable.name.startswith("cgate") else None
+
+
+def maybe_heal_pending_update() -> bool:
+    """Schedule a deferred swap of a staged ``<binary>.new`` left by a failed update.
+
+    When ``update apply`` hits a live MCP session and bails, the downloaded
+    ``<binary>.new`` is left on disk and the user is told to recover manually.
+    The next time any ``cgate`` invocation starts (CLI command or MCP server
+    spawn), we check whether that staged file still exists AND no other
+    ``cgate.exe`` processes are running. If so, we spawn ``cgate-helper.exe
+    heal`` (detached, waiting on our own PID) so the swap completes the
+    instant we exit -- no user action required.
+
+    Returns True when a heal was scheduled, False otherwise. Never raises;
+    any failure to find the staging, the helper, or to spawn just logs to
+    ``update.log`` and is otherwise silent.
+    """
+    binary = current_binary_path()
+    if binary is None:
+        return False
+    staging = binary.with_name(binary.name + ".new")
+    if not staging.exists():
+        return False
+    self_pid = os.getpid()
+    blockers = find_blocking_processes(binary, exclude_pid=self_pid)
+    if blockers:
+        return False
+    helper = ensure_helper_binary(binary)
+    if helper is None:
+        return False
+    if not spawn_helper(
+        helper,
+        "heal",
+        "--target",
+        str(binary),
+        "--wait-pid",
+        str(self_pid),
+    ):
+        append_log("heal: failed to spawn cgate-helper")
+        return False
+    return True

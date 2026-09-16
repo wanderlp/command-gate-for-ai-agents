@@ -28,6 +28,7 @@ from cgate.mcp_server.tools import (
     list_connections,
     propose_command,
 )
+from cgate.update import maybe_heal_pending_update
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -226,5 +227,11 @@ async def _serve_stdio() -> None:
 
 
 def main() -> None:
-    """Run the command-gate MCP server over standard input and output."""
+    """Run the command-gate MCP server over standard input and output.
+
+    Spawns the helper to self-heal any staged update before we enter the
+    long-running stdio loop; the helper waits on our PID and does the
+    swap the instant the IA client that owns us closes the connection.
+    """
+    maybe_heal_pending_update()
     anyio.run(_serve_stdio)

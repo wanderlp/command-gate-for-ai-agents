@@ -162,3 +162,59 @@ def test_main_logs_failure_and_returns_2(monkeypatch: pytest.MonkeyPatch, tmp_pa
     code = main(["delete", "--target", str(target)])
     assert code == 2
     assert any("failed" in line for line in logged)
+
+
+def test_main_heal_no_staging_is_noop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "cgate.exe"
+    target.write_bytes(b"old")
+    assert not (tmp_path / "cgate.exe.new").exists()
+
+    monkeypatch.setattr("cgate.helper.__main__._helper_dir", lambda: tmp_path)
+    logged: list[str] = []
+    monkeypatch.setattr("cgate.helper.__main__.append_log", logged.append)
+
+    code = main(["heal", "--target", str(target)])
+    assert code == 0
+    assert target.read_bytes() == b"old"
+    assert any("no pending update" in line for line in logged)
+
+
+def test_main_heal_with_staging_swaps_atomically(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "cgate.exe.new"
+    target = tmp_path / "cgate.exe"
+    source.write_bytes(b"new")
+    target.write_bytes(b"old")
+
+    monkeypatch.setattr("cgate.helper.__main__._helper_dir", lambda: tmp_path)
+    monkeypatch.setattr("cgate.helper.__main__.wait_for_pids", lambda *_a, **_k: True)
+    logged: list[str] = []
+    monkeypatch.setattr("cgate.helper.__main__.append_log", logged.append)
+
+    code = main(["heal", "--target", str(target), "--wait-pid", "12345"])
+    assert code == 0
+    assert target.read_bytes() == b"new"
+    assert not source.exists()
+    assert any("succeeded" in line for line in logged)
+
+
+def test_main_heal_logs_failure_and_returns_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "cgate.exe.new"
+    target = tmp_path / "cgate.exe"
+    source.write_bytes(b"new")
+    target.write_bytes(b"old")
+
+    monkeypatch.setattr("cgate.helper.__main__._helper_dir", lambda: tmp_path)
+    monkeypatch.setattr("cgate.helper.__main__.wait_for_pids", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "cgate.helper.__main__.retry_replace", lambda *_a, **_k: "PermissionError: locked"
+    )
+    logged: list[str] = []
+    monkeypatch.setattr("cgate.helper.__main__.append_log", logged.append)
+
+    code = main(["heal", "--target", str(target)])
+    assert code == 2
+    assert any("failed" in line for line in logged)

@@ -411,6 +411,10 @@ def _attempt_swap_with_recovery(
     previous = binary.with_name(binary.name + ".previous")
     console.print(
         "\n[yellow]Manual recovery:[/yellow]\n"
+        f"  [dim]We'll auto-apply this update the next time you run cgate "
+        f"with no other cgate processes alive. Easiest way there:\n"
+        f"   close every IA client connected to cgate (Claude Code / opencode / Cursor),\n"
+        f"   or restart your computer. No action needed unless you want to apply now:[/dim]\n"
         f"  1. Stop every running 'cgate' process:\n"
         f"     [dim]taskkill /F /IM cgate.exe[/dim]\n"
         f"  2. Replace the binary:\n"
