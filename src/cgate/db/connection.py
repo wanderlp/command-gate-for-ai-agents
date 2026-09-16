@@ -13,6 +13,26 @@ if TYPE_CHECKING:
     from collections.abc import Generator
     from pathlib import Path
 
+# Auto-approve mode tables (feature: modes + per-server opt-in). Kept out of
+# schema.py's Phase-1 SCHEMA_SQL so the original schema constant stays frozen;
+# both statements are IF NOT EXISTS, so init stays idempotent. No default
+# app_mode row is seeded: absence means "unset" and AppModeRepo.get() raises.
+_MODE_SETTINGS_SQL = """
+CREATE TABLE IF NOT EXISTS app_mode (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    mode TEXT NOT NULL CHECK (mode IN ('propose','auto')),
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS server_settings (
+    server_alias TEXT PRIMARY KEY,
+    auto_allowed INTEGER NOT NULL DEFAULT 0 CHECK (auto_allowed IN (0,1)),
+    updated_at TEXT,
+    updated_by TEXT
+);
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class Database:
@@ -54,6 +74,7 @@ def init_database(database: Database) -> None:
     database.path.parent.mkdir(parents=True, exist_ok=True)
     with connect(database) as conn:
         _ = conn.executescript(SCHEMA_SQL)
+        _ = conn.executescript(_MODE_SETTINGS_SQL)
         applied_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         _ = conn.execute(
             "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, ?)",

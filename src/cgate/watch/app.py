@@ -14,12 +14,20 @@ from typing import TYPE_CHECKING, ClassVar
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Footer, Header, ListItem, ListView, Static
+from textual.widgets import Footer, ListItem, ListView, Static
 from typing_extensions import override
 
+from cgate.db.mode import AppModeNotSetError, Mode
 from cgate.watch.approval import approve_one, reject_one
+from cgate.watch.mode_modal import ModeModal, mode_markup
 from cgate.watch.queue import count_waiting, pending_commands_in_batch
-from cgate.watch.render import format_batch_header, format_command_line, format_waiting_notice
+from cgate.watch.render import (
+    format_batch_header,
+    format_command_line,
+    format_waiting_notice,
+    server_badge,
+)
+from cgate.watch.server_settings_modal import ServerSettingsModal
 
 if TYPE_CHECKING:
     from textual.binding import BindingType
@@ -28,7 +36,9 @@ if TYPE_CHECKING:
     from cgate.db.batches import BatchesRepo
     from cgate.db.commands import CommandsRepo
     from cgate.db.connection import Database
-    from cgate.db.types import Batch, BatchId, Command, CommandId
+    from cgate.db.mode import AppModeRepo
+    from cgate.db.server_settings import ServerSettingsRepo
+    from cgate.db.types import Batch, BatchId, Command, CommandId, Connection
 
 _POLL_INTERVAL_SECONDS: float = 1.5
 
@@ -51,6 +61,44 @@ class QueueSidebar(Vertical):
             style = "bold cyan" if batch.id == active_id else "dim"
             _ = list_view.append(
                 ListItem(Static(f"{marker} [{style}]{batch.title}[/{style}]", markup=True))
+            )
+
+
+class ModeHeader(Horizontal):
+    """Top bar: app title on the left, global mode indicator on the right."""
+
+    @override
+    def compose(self) -> ComposeResult:
+        """Build the title static and the right-aligned mode indicator."""
+        yield Static("[bold]cgate watch[/bold]", id="mode-title")
+        yield Static(id="mode-indicator")
+
+    def show_mode(self, mode: Mode, *, auto_allowed: int, total: int) -> None:
+        """Render the mode label; only AUTO also shows the auto-allowed count."""
+        text = f"MODO: {mode_markup(mode)}"
+        if mode is Mode.AUTO:
+            text += f" [dim]|[/dim] {auto_allowed} servers auto-allowed (de {total})"
+        _ = self.query_one("#mode-indicator", Static).update(text)
+
+
+class ServersSidebar(Vertical):
+    """Left-rail section listing every connection with its auto-approve flag."""
+
+    @override
+    def compose(self) -> ComposeResult:
+        """Build the static title and the servers list view."""
+        yield Static("[bold]Servers[/bold]", classes="sidebar-title")
+        yield ListView(id="servers-list")
+
+    def refresh_servers(self, rows: list[tuple[Connection, bool]]) -> None:
+        """Replace the list view contents with the current connections and flags."""
+        list_view = self.query_one("#servers-list", ListView)
+        _ = list_view.clear()
+        for connection, auto_allowed in rows:
+            checkbox = "[✓]" if auto_allowed else "[ ]"
+            badge = server_badge(connection.server_type)
+            _ = list_view.append(
+                ListItem(Static(f"{connection.alias}  {badge}  {checkbox}", markup=True))
             )
 
 
@@ -112,8 +160,13 @@ class WatchApp(App[None]):
 
     CSS: ClassVar[str] = """
     Screen { background: $surface; }
+    ModeHeader { dock: top; height: 1; background: $panel; padding: 0 1; }
+    #mode-title { width: auto; }
+    #mode-indicator { width: 1fr; text-align: right; }
     #body { height: 1fr; }
-    QueueSidebar { width: 34; border-right: solid $panel; padding: 1; }
+    #sidebar { width: 36; border-right: solid $panel; }
+    QueueSidebar { padding: 1; height: 1fr; }
+    ServersSidebar { padding: 1; height: auto; max-height: 45%; border-top: solid $panel; }
     .sidebar-title { margin-bottom: 1; }
     ActivePanel { padding: 1 2; }
     #active-header { margin-bottom: 1; }
@@ -126,6 +179,8 @@ class WatchApp(App[None]):
         Binding("n", "reject_one", "Rechazar"),
         Binding("a", "approve_all", "Aprobar todo"),
         Binding("r", "reject_all", "Rechazar todo"),
+        Binding("m", "toggle_mode", "Modo"),
+        Binding("s", "server_settings", "Servers"),
         Binding("q", "quit", "Salir"),
     ]
 
@@ -133,15 +188,19 @@ class WatchApp(App[None]):
     _batches: BatchesRepo  # class-level annotation required by strict mode
     _commands: CommandsRepo  # class-level annotation required by strict mode
     _connections: ConnectionsRepo  # class-level annotation required by strict mode
+    _mode: AppModeRepo  # class-level annotation required by strict mode
+    _server_settings: ServerSettingsRepo  # class-level annotation required by strict mode
     _busy: bool
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - signature follows the required repository DI boundary
         self,
         *,
         db: Database,
         batches: BatchesRepo,
         commands: CommandsRepo,
         connections: ConnectionsRepo,
+        mode: AppModeRepo,
+        server_settings: ServerSettingsRepo,
     ) -> None:
         """Store the repository collaborators used to read and mutate the queue."""
         super().__init__()
@@ -149,15 +208,19 @@ class WatchApp(App[None]):
         self._batches = batches
         self._commands = commands
         self._connections = connections
+        self._mode = mode
+        self._server_settings = server_settings
         self._busy = False
 
     @override
     def compose(self) -> ComposeResult:
-        """Lay out header, waiting notice, sidebar + active panel, and footer."""
-        yield Header(show_clock=True)
+        """Lay out mode header, waiting notice, sidebar + active panel, and footer."""
+        yield ModeHeader()
         yield Static(id="waiting-notice")
         with Horizontal(id="body"):
-            yield QueueSidebar()
+            with Vertical(id="sidebar"):
+                yield QueueSidebar()
+                yield ServersSidebar()
             yield ActivePanel()
         yield Footer()
 
@@ -194,9 +257,29 @@ class WatchApp(App[None]):
         except Exception:
             pass
 
+    def _global_mode(self) -> Mode:
+        """Return the persisted global mode, defaulting to PROPOSE when unset."""
+        try:
+            return self._mode.get().mode
+        except AppModeNotSetError:
+            return Mode.PROPOSE
+
+    def _refresh_mode_and_servers(self) -> None:
+        """Update the mode header and the servers sidebar from the database."""
+        mode = self._global_mode()
+        connections = self._connections.list_all()
+        rows = [
+            (connection, self._server_settings.get_or_default(connection.alias).auto_allowed)
+            for connection in connections
+        ]
+        auto_allowed = sum(1 for _, allowed in rows if allowed)
+        self.query_one(ModeHeader).show_mode(mode, auto_allowed=auto_allowed, total=len(rows))
+        self.query_one(ServersSidebar).refresh_servers(rows)
+
     def _refresh(self) -> None:
         """Re-read the queue from the database and update every widget from it."""
         try:
+            self._refresh_mode_and_servers()
             pending = self._batches.list_pending()
             active = pending[0] if pending else None
             self.query_one(QueueSidebar).refresh_queue(pending, active.id if active else None)
@@ -279,6 +362,31 @@ class WatchApp(App[None]):
                 self._render_db_error(exc)
                 return
         self._refresh()
+
+    def action_toggle_mode(self) -> None:
+        """Open the confirmation modal and flip the global mode on confirm."""
+
+        def _after(confirmed: bool | None) -> None:  # noqa: FBT001 - Textual push_screen callback signature
+            if confirmed:
+                self._refresh()
+
+        self.push_screen(ModeModal(mode_repo=self._mode), _after)
+
+    def action_server_settings(self) -> None:
+        """Open the per-server auto-approve editor and refresh on save."""
+
+        def _after(saved: bool | None) -> None:  # noqa: FBT001 - Textual push_screen callback signature
+            if saved:
+                self._refresh()
+
+        self.push_screen(
+            ServerSettingsModal(
+                connections=self._connections,
+                settings=self._server_settings,
+                mode_repo=self._mode,
+            ),
+            _after,
+        )
 
     async def _approve(self, command_id: CommandId) -> None:
         """Run one approval off the event loop thread, then refresh the view."""

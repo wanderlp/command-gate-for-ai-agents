@@ -14,6 +14,8 @@ from cgate.connections.store import ConnectionsRepo
 from cgate.db.batches import BatchesRepo
 from cgate.db.commands import CommandsRepo
 from cgate.db.connection import Database, init_database
+from cgate.db.mode import AppModeRepo
+from cgate.db.server_settings import ServerSettingsRepo
 from cgate.db.types import CommandStatus, ServerType
 from cgate.executor.base import ExecutionResult
 from cgate.watch.app import ActivePanel, WatchApp
@@ -30,6 +32,8 @@ class Repos:
     batches: BatchesRepo
     commands: CommandsRepo
     connections: ConnectionsRepo
+    mode: AppModeRepo
+    server_settings: ServerSettingsRepo
 
 
 @pytest.fixture
@@ -41,6 +45,8 @@ def repos(tmp_path: Path) -> Repos:
         batches=BatchesRepo(db),
         commands=CommandsRepo(db),
         connections=ConnectionsRepo(db),
+        mode=AppModeRepo(db),
+        server_settings=ServerSettingsRepo(db),
     )
 
 
@@ -50,6 +56,8 @@ def _app(repos: Repos) -> WatchApp:
         batches=repos.batches,
         commands=repos.commands,
         connections=repos.connections,
+        mode=repos.mode,
+        server_settings=repos.server_settings,
     )
 
 

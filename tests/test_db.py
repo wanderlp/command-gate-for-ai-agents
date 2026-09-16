@@ -9,7 +9,9 @@ import pytest
 from cgate.db.batches import BatchesRepo
 from cgate.db.commands import CommandsRepo
 from cgate.db.connection import Database, connect, init_database
+from cgate.db.mode import AppModeNotSetError, AppModeRepo, Mode
 from cgate.db.schema import SCHEMA_VERSION
+from cgate.db.server_settings import ServerSettingsRepo
 from cgate.db.types import BatchId, CommandStatus, ServerType
 
 if TYPE_CHECKING:
@@ -402,3 +404,98 @@ def test_dbs_are_isolated_per_path(tmp_path: Path) -> None:
     repo1.create(title="a1", description=None, requested_by_agent=None)
     assert len(repo1.list_pending()) == 1
     assert len(repo2.list_pending()) == 0
+
+
+def test_init_creates_app_mode_and_server_settings_tables(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    with connect(db) as conn:
+        tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    assert {"app_mode", "server_settings"}.issubset(tables)
+
+
+def test_init_twice_with_mode_tables_is_idempotent(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    init_database(db)
+    init_database(db)
+    with connect(db) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM schema_version"
+        ).fetchone()
+    assert count["n"] == 1
+
+
+def test_app_mode_get_raises_when_unset(tmp_path: Path) -> None:
+    repo = AppModeRepo(_db(tmp_path))
+    with pytest.raises(AppModeNotSetError):
+        _ = repo.get()
+
+
+def test_app_mode_set_then_get_roundtrip(tmp_path: Path) -> None:
+    repo = AppModeRepo(_db(tmp_path))
+    created = repo.set(mode=Mode.AUTO, updated_by="wlopez")
+    assert created.mode is Mode.AUTO
+    assert created.updated_by == "wlopez"
+    fetched = repo.get()
+    assert fetched.mode is Mode.AUTO
+    assert fetched.updated_by == "wlopez"
+    assert fetched.updated_at == created.updated_at
+
+
+def test_app_mode_set_upserts_single_row(tmp_path: Path) -> None:
+    repo = AppModeRepo(_db(tmp_path))
+    _ = repo.set(mode=Mode.PROPOSE, updated_by="a")
+    _ = repo.set(mode=Mode.AUTO, updated_by="b")
+    fetched = repo.get()
+    assert fetched.mode is Mode.AUTO
+    assert fetched.updated_by == "b"
+
+
+def test_server_settings_get_returns_none_when_unset(tmp_path: Path) -> None:
+    repo = ServerSettingsRepo(_db(tmp_path))
+    assert repo.get("srv") is None
+
+
+def test_server_settings_get_or_default_returns_not_allowed_when_unset(
+    tmp_path: Path,
+) -> None:
+    repo = ServerSettingsRepo(_db(tmp_path))
+    setting = repo.get_or_default("srv")
+    assert setting.server_alias == "srv"
+    assert setting.auto_allowed is False
+    assert setting.updated_at is None
+    assert setting.updated_by is None
+
+
+def test_server_settings_set_then_get_roundtrip(tmp_path: Path) -> None:
+    repo = ServerSettingsRepo(_db(tmp_path))
+    created = repo.set(alias="srv", auto_allowed=True, updated_by="wlopez")
+    assert created.auto_allowed is True
+    assert created.updated_at is not None
+    fetched = repo.get("srv")
+    assert fetched is not None
+    assert fetched.auto_allowed is True
+    assert fetched.updated_by == "wlopez"
+    assert fetched.updated_at == created.updated_at
+
+
+def test_server_settings_set_upserts_existing_alias(tmp_path: Path) -> None:
+    repo = ServerSettingsRepo(_db(tmp_path))
+    _ = repo.set(alias="srv", auto_allowed=True, updated_by="a")
+    _ = repo.set(alias="srv", auto_allowed=False, updated_by="b")
+    fetched = repo.get("srv")
+    assert fetched is not None
+    assert fetched.auto_allowed is False
+    assert fetched.updated_by == "b"
+
+
+def test_server_settings_list_all_returns_only_explicit_rows(tmp_path: Path) -> None:
+    repo = ServerSettingsRepo(_db(tmp_path))
+    _ = repo.set(alias="beta", auto_allowed=True, updated_by="a")
+    _ = repo.set(alias="alpha", auto_allowed=False, updated_by="a")
+    _ = repo.get_or_default("ghost")
+    assert [setting.server_alias for setting in repo.list_all()] == ["alpha", "beta"]

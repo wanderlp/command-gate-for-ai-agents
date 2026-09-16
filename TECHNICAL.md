@@ -88,12 +88,16 @@ Both are unsigned-binary friction, not bugs. Code signing is on the roadmap
 ## Typical workflow
 
 ```text
-# 1. IA agent calls propose_command via MCP.  Humans never see this step.
+# 1. IA agent calls propose_command via MCP.  By default it lands in the
+#    approval queue (PROPOSE mode). If you've enabled AUTO mode and opted the
+#    target server in, it runs immediately and the response carries the result
+#    inline -- see the "Modes" section below for the full picture.
 
 # 2. Run the watch dashboard: a full-screen queue + active-batch view.
 $ cgate watch
 # Sidebar shows the FIFO batch queue; the main panel shows the active
-# batch's commands. y=approve  n=reject  a=approve rest  r=reject rest  q=quit.
+# batch's commands. y=approve  n=reject  a=approve rest  r=reject rest
+# m=toggle mode  s=server settings  q=quit.
 # Stays open and keeps polling for new batches even when the queue drains.
 
 # 3. Stay current.
@@ -107,13 +111,59 @@ Run `cgate update apply` to install.
 $ cgate update status
 ```
 
+## Modes: how PROPOSE and AUTO are wired
+
+`propose_command` reads two pieces of state from the local SQLite database before
+deciding what to do with a command:
+
+1. **`app_mode`** — a single-row table holding the global mode (`propose` or
+   `auto`). Absence means "unset"; absent rows behave as PROPOSE.
+2. **`server_settings`** — one row per server alias that has been explicitly
+   opted in (`auto_allowed = 1`). Absence means "not allowed."
+
+`cgate/mcp_server/auto_resolution.py:resolve_auto_behavior()` is the one place
+that turns those two flags into a `BehaviorDecision`:
+
+| Global mode | Server opted in | Action | `effective_reason` |
+|---|---|---|---|
+| `propose` (or unset) | (any) | queue | `global_propose` |
+| `auto` | no | queue | `server_not_opted_in` |
+| `auto` | yes | execute | `both_allowed` |
+
+Only the last row ever executes. Both switches are defaulted to safe, so the
+"accidentally enabled" case still requires a second explicit decision before
+anything runs.
+
+When `propose_command` does execute, it mirrors `watch/approval.py:approve_one`'s
+transition cycle exactly: `PENDING → APPROVED` (with `approved_by = "auto:watch:<user>"`,
+falling back to `"auto:mcp"` if `getpass.getuser()` raises) → `EXECUTED` or `FAILED`
+with the output captured into the `result` column. The same `update_status(expected_status=...)`
+CAS guard applies, so a manual approval racing an auto-approval never produces a
+double-execution. Auto-approved rows are filterable as `WHERE approved_by LIKE 'auto:%'`.
+
+### What the AI cannot change
+
+Both flags live only in the database and are mutated exclusively from inside
+`cgate watch`:
+
+- **`m`** opens a one-keystroke confirmation modal before flipping the global
+  mode.
+- **`s`** opens a modal listing every connection; Space toggles a row's
+  in-memory checkbox, Enter writes, Esc cancels.
+
+`propose_command` reads both flags but exposes no tool that writes them. The MCP
+tool surface is unchanged: still `propose_command`, `list_connections`,
+`check_status`. The change is in `propose_command`'s runtime behaviour — same
+schema, same names, new optional response fields (`mode`, `server_auto_allowed`,
+`effective_reason`, `result`, `approved_by`).
+
 ## Status
 
 Phase 1 complete: end-to-end propose → approve → execute → audit loop working,
 plus a round of security/robustness hardening (host key verification, TLS
 validation, DB race-condition fixes, GitHub Actions build-provenance
 attestation verification on self-update, and more).
-284 unit/integration tests pass; ruff + basedpyright pass with a handful of
+306 unit/integration tests pass; ruff + basedpyright pass with a handful of
 accepted pre-existing findings (no known bugs, just style/complexity debt).
 
 ## Development
@@ -149,11 +199,14 @@ src/cgate/
 ├── cli/          # Top-level CLI: connections, mcp, update, watch
 ├── connections/  # Saved server connections + WinRM/SSH detection + keyring auth
 ├── core/         # Shared paths, primitives, and install/PATH registration
-├── db/           # Local SQLite persistence (batches, commands, connections)
+├── db/           # Local SQLite persistence (batches, commands, connections,
+│                 # app_mode, server_settings)
 ├── executor/     # WinRM and SSH execution
 ├── helper/       # Standalone cgate-helper.exe: Windows-only file swap for self-update
 ├── mcp_server/   # MCP server exposing propose_command / list_connections / check_status
-└── watch/        # Interactive approval queue (y/n/a/r controls)
+│                 # + auto_resolution.py (mode-aware decision helper)
+└── watch/        # Interactive approval queue (y/n/a/r/m/s controls)
+                  # + mode_modal.py + server_settings_modal.py
 ```
 
 Release assets are produced by `.github/workflows/release.yml` on every tag push
