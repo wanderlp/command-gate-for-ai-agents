@@ -27,6 +27,7 @@ from cgate.update import (
     find_mcp_serving_pids,
     helper_binary_path,
     kill_process,
+    maybe_heal_pending_update,
     replace_binary,
     select_asset,
     select_helper_asset,
@@ -859,3 +860,107 @@ def test_ensure_helper_binary_returns_none_on_replace_failure(
 
     assert result is None
     assert not (tmp_path / "cgate-helper.exe.new").exists()
+
+
+def test_maybe_heal_pending_update_returns_false_when_no_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dev-mode (current_binary_path == None) is a no-op, no helper spawned."""
+    monkeypatch.setattr("cgate.update.current_binary_path", lambda: None)
+    spawned: list[tuple[Path, tuple[str, ...]]] = []
+    monkeypatch.setattr(
+        "cgate.update.spawn_helper", lambda *args: spawned.append(args) or True
+    )
+
+    assert maybe_heal_pending_update() is False
+    assert spawned == []
+
+
+def test_maybe_heal_pending_update_returns_false_when_no_staging(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    binary = tmp_path / "cgate.exe"
+    binary.write_bytes(b"current")
+    monkeypatch.setattr("cgate.update.current_binary_path", lambda: binary)
+    assert not (tmp_path / "cgate.exe.new").exists()
+
+    spawned: list[tuple[Path, tuple[str, ...]]] = []
+    monkeypatch.setattr(
+        "cgate.update.spawn_helper", lambda *args: spawned.append(args) or True
+    )
+
+    assert maybe_heal_pending_update() is False
+    assert spawned == []
+
+
+def test_maybe_heal_pending_update_returns_false_when_other_cgate_alive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    binary = tmp_path / "cgate.exe"
+    binary.write_bytes(b"current")
+    (tmp_path / "cgate.exe.new").write_bytes(b"staged")
+    monkeypatch.setattr("cgate.update.current_binary_path", lambda: binary)
+    monkeypatch.setattr("cgate.update.find_blocking_processes", lambda *_a, **_k: [4242])
+
+    spawned: list[tuple[Path, tuple[str, ...]]] = []
+    monkeypatch.setattr(
+        "cgate.update.spawn_helper", lambda *args: spawned.append(args) or True
+    )
+
+    assert maybe_heal_pending_update() is False
+    assert spawned == []
+
+
+def test_maybe_heal_pending_update_returns_false_when_no_helper_available(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    binary = tmp_path / "cgate.exe"
+    binary.write_bytes(b"current")
+    (tmp_path / "cgate.exe.new").write_bytes(b"staged")
+    monkeypatch.setattr("cgate.update.current_binary_path", lambda: binary)
+    monkeypatch.setattr("cgate.update.find_blocking_processes", lambda *_a, **_k: [])
+    monkeypatch.setattr("cgate.update.ensure_helper_binary", lambda *_a, **_k: None)
+
+    assert maybe_heal_pending_update() is False
+
+
+def test_maybe_heal_pending_update_spawns_helper_when_clean(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    binary = tmp_path / "cgate.exe"
+    binary.write_bytes(b"current")
+    (tmp_path / "cgate.exe.new").write_bytes(b"staged")
+    helper = tmp_path / "cgate-helper.exe"
+    monkeypatch.setattr("cgate.update.current_binary_path", lambda: binary)
+    monkeypatch.setattr("cgate.update.find_blocking_processes", lambda *_a, **_k: [])
+    monkeypatch.setattr("cgate.update.ensure_helper_binary", lambda *_a, **_k: helper)
+    monkeypatch.setattr("cgate.update.os.getpid", lambda: 9999)
+
+    captured: list[tuple[Path, tuple[str, ...]]] = []
+
+    def fake_spawn(target: Path, *args: str) -> bool:
+        captured.append((target, args))
+        return True
+
+    monkeypatch.setattr("cgate.update.spawn_helper", fake_spawn)
+
+    assert maybe_heal_pending_update() is True
+    assert len(captured) == 1
+    helper_arg, cli_args = captured[0]
+    assert helper_arg == helper
+    assert cli_args == ("heal", "--target", str(binary), "--wait-pid", "9999")
+
+
+def test_maybe_heal_pending_update_returns_false_when_spawn_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    binary = tmp_path / "cgate.exe"
+    binary.write_bytes(b"current")
+    (tmp_path / "cgate.exe.new").write_bytes(b"staged")
+    helper = tmp_path / "cgate-helper.exe"
+    monkeypatch.setattr("cgate.update.current_binary_path", lambda: binary)
+    monkeypatch.setattr("cgate.update.find_blocking_processes", lambda *_a, **_k: [])
+    monkeypatch.setattr("cgate.update.ensure_helper_binary", lambda *_a, **_k: helper)
+    monkeypatch.setattr("cgate.update.spawn_helper", lambda *_a, **_k: False)
+
+    assert maybe_heal_pending_update() is False

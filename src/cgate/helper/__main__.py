@@ -8,6 +8,12 @@ isn't ``cgate.exe`` itself.
 Usage:
     cgate-helper.exe replace --target PATH --source PATH --wait-pid N [...]
     cgate-helper.exe delete  --target PATH --wait-pid N [...]
+    cgate-helper.exe heal   --target PATH [--wait-pid N ...]
+
+``heal`` auto-detects ``<target>.new`` and atomically swaps it onto
+``<target>`` -- the self-healing path used to finish a previously failed
+``update apply`` when the next ``cgate`` invocation notices the staged
+file and no other cgate processes are running.
 """
 
 from __future__ import annotations
@@ -50,6 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
     delete.add_argument("--target", required=True, type=Path)
     delete.add_argument("--wait-pid", type=int, action="append", default=[], dest="wait_pids")
 
+    heal = subparsers.add_parser(
+        "heal",
+        help="If <target>.new exists, atomically swap it onto <target>.",
+    )
+    heal.add_argument("--target", required=True, type=Path)
+    heal.add_argument("--wait-pid", type=int, action="append", default=[], dest="wait_pids")
+
     return parser
 
 
@@ -75,8 +88,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.operation == "replace":
         error = retry_replace(args.source, args.target, total_seconds=_RETRY_TOTAL_SECONDS)
-    else:
+    elif args.operation == "delete":
         error = retry_delete(args.target, total_seconds=_RETRY_TOTAL_SECONDS)
+    else:
+        staging = args.target.with_name(args.target.name + ".new")
+        if not staging.exists():
+            append_log(f"helper heal: no pending update at {staging}")
+            return 0
+        if not is_safe_target(staging, helper_dir=helper_dir, allowed_names=SOURCE_NAMES):
+            append_log(f"helper heal: refusing unsafe staging {staging}")
+            return 3
+        error = retry_replace(staging, args.target, total_seconds=_RETRY_TOTAL_SECONDS)
 
     if error is not None:
         append_log(f"helper {args.operation} failed for {args.target}: {error}")
