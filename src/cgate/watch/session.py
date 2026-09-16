@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 from cgate.connections.store import ConnectionsRepo
 from cgate.db.batches import BatchesRepo
 from cgate.db.commands import CommandsRepo
+from cgate.db.mode import AppModeRepo
+from cgate.db.server_settings import ServerSettingsRepo
 from cgate.watch.app import WatchApp
 
 if TYPE_CHECKING:
@@ -24,4 +26,13 @@ def run_watch_session(db: Database) -> None:
     batches = BatchesRepo(db)
     commands = CommandsRepo(db)
     connections = ConnectionsRepo(db)
-    WatchApp(db=db, batches=batches, commands=commands, connections=connections).run()
+    mode = AppModeRepo(db)
+    server_settings = ServerSettingsRepo(db)
+    WatchApp(
+        db=db,
+        batches=batches,
+        commands=commands,
+        connections=connections,
+        mode=mode,
+        server_settings=server_settings,
+    ).run()

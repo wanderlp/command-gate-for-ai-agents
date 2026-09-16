@@ -23,6 +23,59 @@ anything, unsupervised."
 - **One binary, nothing to configure.** Ships as a single executable per platform —
   download it and run it, done.
 
+## Modes: PROPOSE and AUTO
+
+`cgate` ships in two modes, and you pick per server which ones can ever run
+unattended. The default is the safe one.
+
+**PROPOSE** (default): every command an AI agent calls lands in the watch queue. You
+press `y` or `n` per command. Nothing runs without you.
+
+**AUTO**: when the agent calls `propose_command`, it runs immediately **only if the
+target server is on your allow-list**. Servers are off by default — you opt them in
+explicitly. Two switches need to land in the "go" position before anything runs
+unattended: the global mode is AUTO *and* that specific server is opted in.
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ cgate watch          MODO: AUTO ⚡ | 1 servers auto-allowed │
+├─────────────────────────────────────────────────────────────┤
+│ [Cola]             [Servers]                                │
+│ ▶ "deploy v2"      dev-1   LNX [✓]                         │
+│                    stage-2 LNX [ ]                          │
+│                    prod-db WIN [ ]                          │
+├─────────────────────────────────────────────────────────────┤
+│ [y]aprobar [n]rechazar [a]aprobar lote [m]odo [s]ervers ... │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Switching modes
+
+Press **`m`** in `cgate watch` to flip the global mode (one keystroke + `y` to
+confirm). Press **`s`** to open the server allow-list and toggle any connection on or
+off. Both modals need an explicit `y` or `Enter`; everything else cancels without
+writing. AI agents have no MCP tool that can change either setting — only your
+keystrokes can.
+
+### Why two switches?
+
+If you leave `MODO: AUTO` on by accident, the worst case is that nothing runs on
+servers that haven't been explicitly opted in. To actually run something
+unattended you must enable the mode **and** flip the per-server switch. Belt and
+suspenders, default-safe at every level.
+
+### The audit trail still works
+
+Auto-approved commands land in the same database with `approved_by` set to
+`auto:watch:<your-username>`, so you can filter the log:
+
+```sql
+SELECT * FROM commands WHERE approved_by LIKE 'auto:%';
+```
+
+You'll see exactly what your AI ran while you weren't looking, who it claimed to
+be, when, and on which server.
+
 ## Get started
 
 1. Download the binary for your platform from the

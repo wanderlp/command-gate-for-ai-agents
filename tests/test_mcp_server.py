@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import getpass
 import json
 from typing import TYPE_CHECKING
 
@@ -15,7 +16,10 @@ from cgate.connections.store import ConnectionsRepo
 from cgate.db.batches import BatchesRepo
 from cgate.db.commands import CommandsRepo
 from cgate.db.connection import Database, init_database
+from cgate.db.mode import AppModeRepo, Mode
+from cgate.db.server_settings import ServerSettingsRepo
 from cgate.db.types import BatchId, CommandStatus, ServerType
+from cgate.executor.base import ExecutionResult
 from cgate.mcp_server import build_server
 from cgate.mcp_server.tools import (
     ProposeCommandResult,
@@ -28,6 +32,8 @@ from cgate.mcp_server.tools import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from pathlib import Path
+
+    from cgate.db.types import Connection
 
 
 def _db(tmp_path: Path) -> Database:
@@ -63,6 +69,8 @@ def _propose(db: Database, **overrides: str | None) -> ProposeCommandResult:
         batches_repo=batches,
         commands_repo=commands,
         connections_repo=connections,
+        mode_repo=AppModeRepo(db),
+        settings_repo=ServerSettingsRepo(db),
         server_alias=values["server_alias"] or "",
         command=values["command"] or "",
         batch_title=values["batch_title"],
@@ -130,6 +138,53 @@ def test_propose_command_never_executes(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(cgate.executor.selector, "execute_command", fail_if_called)
     result = _propose(db)
     assert result["status"] == "pending"
+
+
+def test_propose_command_queues_in_propose_mode(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    _add_connection(db)
+    _ = AppModeRepo(db).set(mode=Mode.PROPOSE, updated_by="test")
+    result = _propose(db)
+    assert result["status"] == "pending"
+    assert result.get("mode") == "propose"
+    assert result.get("effective_reason") == "global_propose"
+
+
+def test_propose_command_queues_in_auto_mode_when_server_not_opted_in(
+    tmp_path: Path,
+) -> None:
+    db = _db(tmp_path)
+    _add_connection(db)
+    _ = AppModeRepo(db).set(mode=Mode.AUTO, updated_by="test")
+    result = _propose(db)
+    assert result["status"] == "pending"
+    assert result.get("mode") == "auto"
+    assert result.get("server_auto_allowed") is False
+    assert result.get("effective_reason") == "server_not_opted_in"
+
+
+def test_propose_command_executes_in_auto_mode_when_server_opted_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = _db(tmp_path)
+    _add_connection(db)
+    _ = AppModeRepo(db).set(mode=Mode.AUTO, updated_by="test")
+    _ = ServerSettingsRepo(db).set(alias="srv", auto_allowed=True, updated_by="test")
+
+    def fake_execute(_connection: Connection, _command: str, **_kwargs: object) -> ExecutionResult:
+        return ExecutionResult(
+            stdout="ok-output", stderr="", exit_code=0, duration_ms=1, error_kind=None
+        )
+
+    monkeypatch.setattr(cgate.executor.selector, "execute_command", fake_execute)
+    monkeypatch.setattr(getpass, "getuser", lambda: "testuser")
+    result = _propose(db)
+    assert result["status"] == "executed"
+    assert result.get("effective_reason") == "both_allowed"
+    assert result.get("result") == "ok-output"
+    approved_by = result.get("approved_by")
+    assert approved_by is not None
+    assert approved_by.startswith("auto:watch:")
 
 
 def test_list_connections_returns_alias_and_server_type_for_each(tmp_path: Path) -> None:

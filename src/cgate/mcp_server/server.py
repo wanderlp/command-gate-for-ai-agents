@@ -17,6 +17,8 @@ from cgate.core.paths import data_dir
 from cgate.db.batches import BatchesRepo
 from cgate.db.commands import CommandsRepo
 from cgate.db.connection import Database, init_database
+from cgate.db.mode import AppModeRepo
+from cgate.db.server_settings import ServerSettingsRepo
 from cgate.mcp_server.tools import (
     BatchStatusResult,
     ConnectionResult,
@@ -42,6 +44,8 @@ class _ToolDeps:
     batches: BatchesRepo
     commands: CommandsRepo
     connections: ConnectionsRepo
+    mode: AppModeRepo
+    settings: ServerSettingsRepo
 
     @classmethod
     def from_db(cls, db: Database) -> _ToolDeps:
@@ -50,6 +54,8 @@ class _ToolDeps:
             batches=BatchesRepo(db),
             commands=CommandsRepo(db),
             connections=ConnectionsRepo(db),
+            mode=AppModeRepo(db),
+            settings=ServerSettingsRepo(db),
         )
 
 
@@ -66,9 +72,13 @@ def _tools() -> list[types.Tool]:
         types.Tool(
             name="propose_command",
             description=(
-                "Register a command in the local approval queue. NEVER executes. "
-                "batch_title is required; batch_description is optional. If batch_id "
-                "is omitted, a new batch is created."
+                "Register a command for execution. Normally it queues for human "
+                "approval in cgate watch, but if cgate's global mode is AUTO AND "
+                "the target server has opted into auto-execution, it runs immediately "
+                "and the response includes the result. The response always carries "
+                "`mode`, `server_auto_allowed`, and `effective_reason` so you can tell "
+                "which path it took. batch_title is required; batch_description is "
+                "optional. If batch_id is omitted, a new batch is created."
             ),
             input_schema={
                 "type": "object",
@@ -162,6 +172,8 @@ def build_server() -> Server[None]:
                         batches_repo=deps.batches,
                         commands_repo=deps.commands,
                         connections_repo=deps.connections,
+                        mode_repo=deps.mode,
+                        settings_repo=deps.settings,
                         server_alias=arguments["server_alias"],
                         command=arguments["command"],
                         batch_title=arguments.get("batch_title"),
