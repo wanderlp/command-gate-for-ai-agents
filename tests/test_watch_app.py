@@ -280,3 +280,32 @@ def test_approve_action_swallows_db_error_from_approve_one(repos: Repos) -> None
     notice, idle = asyncio.run(scenario())
     assert "database is locked" in notice
     assert idle, "_approve must release _busy even when approve_one raises sqlite3.Error"
+
+
+def test_approve_action_swallows_connection_not_found_from_approve_one(repos: Repos) -> None:
+    """A connection removed after its command was queued makes approve_one
+    raise ConnectionNotFoundError -- not a sqlite3.Error. Uncaught, that
+    would crash the whole dashboard over one bad command instead of just
+    that one approval."""
+    lot = repos.batches.create(title="lot", description=None, requested_by_agent=None)
+    _ = repos.commands.add(
+        batch_id=lot.id,
+        server_alias="linux-1",
+        server_type=ServerType.LINUX,
+        command="uptime",
+    )
+    # No matching connection is registered, so approve_one raises
+    # ConnectionNotFoundError instead of executing anything.
+
+    async def scenario() -> tuple[str, bool]:
+        async with _app(repos).run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+            notice = str(pilot.app.query_one("#waiting-notice").content)
+            idle = not pilot.app._busy  # noqa: SLF001
+            return notice, idle
+
+    notice, idle = asyncio.run(scenario())
+    assert "linux-1" in notice
+    assert idle, "_approve must release _busy even when approve_one raises ConnectionNotFoundError"

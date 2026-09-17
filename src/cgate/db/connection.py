@@ -47,8 +47,14 @@ def connect(database: Database) -> Generator[sqlite3.Connection, None, None]:
 
     Sets row_factory=sqlite3.Row for column-name access, and PRAGMA foreign_keys=ON
     so FK references in the schema are enforced.
+
+    ``timeout=30`` (sqlite3's default is 5s) because `cgate watch` and the
+    MCP server backing an AI agent's AUTO-mode auto-execution are two
+    separate processes that can now write to the same file at the same
+    time -- a short busy-timeout would surface as a spurious "database is
+    locked" error in the TUI under nothing worse than ordinary contention.
     """
-    conn = sqlite3.connect(database.path)
+    conn = sqlite3.connect(database.path, timeout=30)
     conn.row_factory = sqlite3.Row
     _ = conn.execute("PRAGMA foreign_keys = ON")
     try:

@@ -186,6 +186,13 @@ def test_propose_command_executes_in_auto_mode_when_server_opted_in(
     approved_by = result.get("approved_by")
     assert approved_by is not None
     assert approved_by.startswith("auto:watch:")
+    # Regression: auto-execution bypasses watch/approval.py entirely, so
+    # nothing else stamps `resolved_at` -- an unresolved batch sits at the
+    # head of the FIFO queue forever, blocking every batch behind it even
+    # though it has nothing left to approve or reject.
+    batch = BatchesRepo(db).get(BatchId(str(result["batch_id"])))
+    assert batch is not None
+    assert batch.resolved_at is not None
 
 
 def test_list_connections_returns_alias_and_server_type_for_each(tmp_path: Path) -> None:

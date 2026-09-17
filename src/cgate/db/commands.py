@@ -19,6 +19,15 @@ _TERMINAL_STATUSES: frozenset[CommandStatus] = frozenset(
 )
 
 
+def all_terminal(commands_for_batch: list[Command]) -> bool:
+    """Return whether every command in the list has reached a terminal status.
+
+    Shared by the watch TUI's own approve/reject path and the MCP AUTO-mode
+    auto-execution path, both of which need to decide when a batch is done.
+    """
+    return all(command.status in _TERMINAL_STATUSES for command in commands_for_batch)
+
+
 class CommandsRepo:
     """Command CRUD + per-batch listing + status transitions."""
 
@@ -114,6 +123,19 @@ class CommandsRepo:
                 ORDER BY position ASC
                 """,
                 (batch_id,),
+            ).fetchall()
+        return [row_to_command(r) for r in rows]
+
+    def list_by_status(self, status: CommandStatus) -> list[Command]:
+        """All commands currently in the given status, across every batch."""
+        with connect(self._db) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, batch_id, position, server_alias, server_type,
+                    command, status, result, approved_by, created_at, resolved_at
+                FROM commands WHERE status = ?
+                """,
+                (status.value,),
             ).fetchall()
         return [row_to_command(r) for r in rows]
 

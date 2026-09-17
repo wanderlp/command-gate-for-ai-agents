@@ -10,6 +10,7 @@ from cgate.db.commands import CommandsRepo
 from cgate.db.mode import AppModeRepo
 from cgate.db.server_settings import ServerSettingsRepo
 from cgate.watch.app import WatchApp
+from cgate.watch.queue import heal_queue
 
 if TYPE_CHECKING:
     from cgate.db.connection import Database
@@ -28,6 +29,7 @@ def run_watch_session(db: Database) -> None:
     connections = ConnectionsRepo(db)
     mode = AppModeRepo(db)
     server_settings = ServerSettingsRepo(db)
+    heal_queue(batches, commands)
     WatchApp(
         db=db,
         batches=batches,

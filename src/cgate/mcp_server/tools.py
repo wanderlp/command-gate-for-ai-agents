@@ -4,6 +4,7 @@ from __future__ import annotations
 import getpass
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
+from cgate.db.commands import all_terminal
 from cgate.db.mode import AppModeNotSetError, Mode
 from cgate.db.types import BatchId, CommandStatus
 from cgate.executor import selector
@@ -121,8 +122,9 @@ def _auto_approve_by() -> str:
         return "auto:mcp"
 
 
-def _execute_auto(
+def _execute_auto(  # noqa: PLR0913 - signature follows the required repository DI boundary
     *,
+    batches_repo: BatchesRepo,
     commands_repo: CommandsRepo,
     connection: Connection,
     queued: Command,
@@ -168,6 +170,12 @@ def _execute_auto(
         approved_by=approver,
         result=output,
     )
+    # Auto-execution bypasses watch/approval.py entirely, so nothing else
+    # ever stamps `resolved_at` for this batch -- without this, a fully
+    # terminal batch sits at the head of the FIFO queue forever, blocking
+    # every batch behind it from ever becoming approvable.
+    if all_terminal(commands_repo.list_for_batch(queued.batch_id)):
+        batches_repo.mark_resolved(queued.batch_id)
     return {
         "batch_id": queued.batch_id,
         "command_id": queued.id,
@@ -234,6 +242,7 @@ def propose_command(  # noqa: PLR0913 - boundary mirrors the specified MCP tool 
     )
     if decision["action"] == "execute":
         return _execute_auto(
+            batches_repo=batches_repo,
             commands_repo=commands_repo,
             connection=connection,
             queued=queued,

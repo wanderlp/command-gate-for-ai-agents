@@ -16,8 +16,11 @@ from cgate.watch.approval import approve_one, approve_remaining, reject_one, rej
 from cgate.watch.queue import (
     active_batch,
     count_waiting,
+    fail_orphaned_approvals,
+    heal_queue,
     is_batch_resolved,
     pending_commands_in_batch,
+    resolve_stale_batches,
 )
 from cgate.watch.session import run_watch_session
 
@@ -157,6 +160,62 @@ def test_is_batch_resolved_returns_true_when_all_terminal(repos: Repos) -> None:
 
     refreshed = repos.commands.list_for_batch(lot.id)
     assert is_batch_resolved(refreshed) is True
+
+
+def test_resolve_stale_batches_marks_resolved_when_all_commands_terminal(repos: Repos) -> None:
+    """A command can turn terminal outside approve_one/reject_one (MCP AUTO
+    mode auto-executes without ever calling either) -- resolve_stale_batches
+    is the sweep that catches the batch it leaves unresolved."""
+    lot = _batch(repos)
+    cmd = _command(repos, batch_id=lot.id)
+    repos.commands.update_status(cmd.id, status=CommandStatus.EXECUTED)
+
+    resolve_stale_batches(repos.batches, repos.commands)
+
+    assert repos.batches.get(lot.id).resolved_at is not None
+
+
+def test_resolve_stale_batches_leaves_batch_open_when_a_command_is_still_pending(
+    repos: Repos,
+) -> None:
+    lot = _batch(repos)
+    _ = _command(repos, batch_id=lot.id)
+
+    resolve_stale_batches(repos.batches, repos.commands)
+
+    assert repos.batches.get(lot.id).resolved_at is None
+
+
+def test_fail_orphaned_approvals_marks_stuck_approved_commands_failed(repos: Repos) -> None:
+    """A command left APPROVED means the process that approved it died
+    before executing it -- it can never reach EXECUTED/FAILED on its own."""
+    cmd = _command(repos)
+    repos.commands.update_status(cmd.id, status=CommandStatus.APPROVED, approved_by="tester")
+
+    fail_orphaned_approvals(repos.commands)
+
+    updated = repos.commands.get(cmd.id)
+    assert updated.status is CommandStatus.FAILED
+    assert "interrupted" in (updated.result or "").lower()
+
+
+def test_fail_orphaned_approvals_leaves_pending_commands_alone(repos: Repos) -> None:
+    cmd = _command(repos)
+
+    fail_orphaned_approvals(repos.commands)
+
+    assert repos.commands.get(cmd.id).status is CommandStatus.PENDING
+
+
+def test_heal_queue_resolves_batch_after_failing_its_orphaned_command(repos: Repos) -> None:
+    lot = _batch(repos)
+    cmd = _command(repos, batch_id=lot.id)
+    repos.commands.update_status(cmd.id, status=CommandStatus.APPROVED, approved_by="tester")
+
+    heal_queue(repos.batches, repos.commands)
+
+    assert repos.batches.get(lot.id).resolved_at is not None
+    assert repos.commands.get(cmd.id).status is CommandStatus.FAILED
 
 
 def test_approve_one_marks_executed_and_calls_executor(repos: Repos) -> None:
@@ -332,3 +391,27 @@ def test_run_watch_session_always_launches_the_dashboard(
 
     assert launched["ran"] is True
     assert launched["db"] is repos.db
+
+
+def test_run_watch_session_heals_the_queue_before_launching(
+    repos: Repos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batch stuck open by a crash or a since-fixed bug must never greet
+    the user on the next launch -- heal_queue runs before WatchApp does."""
+    lot = _batch(repos)
+    cmd = _command(repos, batch_id=lot.id)
+    repos.commands.update_status(cmd.id, status=CommandStatus.APPROVED, approved_by="tester")
+
+    class FakeApp:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr("cgate.watch.session.WatchApp", FakeApp)
+
+    run_watch_session(repos.db)
+
+    assert repos.commands.get(cmd.id).status is CommandStatus.FAILED
+    assert repos.batches.get(lot.id).resolved_at is not None

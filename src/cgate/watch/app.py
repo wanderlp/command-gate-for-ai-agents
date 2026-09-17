@@ -18,7 +18,12 @@ from textual.widgets import Footer, ListItem, ListView, Static
 from typing_extensions import override
 
 from cgate.db.mode import AppModeNotSetError, Mode
-from cgate.watch.approval import approve_one, reject_one
+from cgate.watch.approval import (
+    CommandDisappearedError,
+    ConnectionNotFoundError,
+    approve_one,
+    reject_one,
+)
 from cgate.watch.mode_modal import ModeModal, mode_markup
 from cgate.watch.queue import count_waiting, pending_commands_in_batch
 from cgate.watch.render import (
@@ -229,6 +234,21 @@ class WatchApp(App[None]):
         self._refresh()
         _ = self.set_interval(_POLL_INTERVAL_SECONDS, self._refresh)
 
+    def _render_notice(self, text: str, sub_title: str) -> None:
+        """Update the waiting-notice and sub_title without ever raising.
+
+        Best-effort: if the widget tree is already gone (e.g. `query_one`
+        raises during teardown), this swallows rather than raising, since
+        Textual would otherwise print its own traceback on top of the one
+        being reported.
+        """
+        try:
+            notice = self.query_one("#waiting-notice", Static)
+            _ = notice.update(text)
+            self.sub_title = sub_title  # pyright: ignore[reportUnannotatedClassAttribute]
+        except Exception:
+            pass
+
     def _render_db_error(self, exc: sqlite3.Error) -> None:
         """Render a database error on the TUI without raising (issue #12).
 
@@ -240,22 +260,26 @@ class WatchApp(App[None]):
         helper so the user sees a clean in-UI message and stays in the
         dashboard; the next polling tick (or the user's next keypress)
         will retry the read automatically.
-
-        Best-effort: if the widget tree is already gone (e.g. `query_one`
-        raises during teardown), this swallows rather than raising,
-        since Textual would otherwise print its own traceback on top of
-        the broken one.
         """
-        try:
-            notice = self.query_one("#waiting-notice", Static)
-            _ = notice.update(
-                f"[red]Could not read the database:[/red] {exc}\n"
-                "[dim]Check that no other cgate process is locking "
-                "cgate.db. The next read will retry automatically.[/dim]"
-            )
-            self.sub_title = "database error"  # pyright: ignore[reportUnannotatedClassAttribute]
-        except Exception:
-            pass
+        self._render_notice(
+            f"[red]Could not read the database:[/red] {exc}\n"
+            "[dim]Check that no other cgate process is locking "
+            "cgate.db. The next read will retry automatically.[/dim]",
+            "database error",
+        )
+
+    def _render_approval_error(self, exc: Exception) -> None:
+        """Render an approval failure on the TUI without raising or crashing.
+
+        `approve_one` can also raise `ConnectionNotFoundError` (the
+        connection was removed after the command was queued) or
+        `CommandDisappearedError`, on top of `sqlite3.Error`. Left
+        uncaught inside a Textual action, either would crash the whole
+        dashboard the same way issue #12 did -- over a single bad
+        command. The busy flag is still released by `_approve`'s
+        `finally`, so the rest of the queue stays fully usable.
+        """
+        self._render_notice(f"[red]Could not approve this command:[/red] {exc}", "approval error")
 
     def _global_mode(self) -> Mode:
         """Return the persisted global mode, defaulting to PROPOSE when unset."""
@@ -403,6 +427,9 @@ class WatchApp(App[None]):
                 )
             except sqlite3.Error as exc:
                 self._render_db_error(exc)
+                return
+            except (ConnectionNotFoundError, CommandDisappearedError) as exc:
+                self._render_approval_error(exc)
                 return
         finally:
             self._busy = False

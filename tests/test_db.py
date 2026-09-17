@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from cgate.db.batches import BatchesRepo
-from cgate.db.commands import CommandsRepo
+from cgate.db.commands import CommandsRepo, all_terminal
 from cgate.db.connection import Database, connect, init_database
 from cgate.db.mode import AppModeNotSetError, AppModeRepo, Mode
 from cgate.db.schema import SCHEMA_VERSION
@@ -254,6 +254,60 @@ def test_update_status_approved_does_not_set_resolved_at(tmp_path: Path) -> None
     assert fetched is not None
     assert fetched.status == CommandStatus.APPROVED
     assert fetched.resolved_at is None
+
+
+def test_all_terminal_false_when_any_command_still_approved(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    batches = BatchesRepo(db)
+    commands = CommandsRepo(db)
+    batch = batches.create(title="b", description=None, requested_by_agent=None)
+    executed = commands.add(
+        batch_id=batch.id, server_alias="srv-1", server_type=ServerType.LINUX, command="a"
+    )
+    approved = commands.add(
+        batch_id=batch.id, server_alias="srv-1", server_type=ServerType.LINUX, command="b"
+    )
+    commands.update_status(executed.id, status=CommandStatus.EXECUTED)
+    commands.update_status(approved.id, status=CommandStatus.APPROVED)
+
+    assert all_terminal(commands.list_for_batch(batch.id)) is False
+
+
+def test_all_terminal_true_when_every_command_is_terminal(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    batches = BatchesRepo(db)
+    commands = CommandsRepo(db)
+    batch = batches.create(title="b", description=None, requested_by_agent=None)
+    executed = commands.add(
+        batch_id=batch.id, server_alias="srv-1", server_type=ServerType.LINUX, command="a"
+    )
+    rejected = commands.add(
+        batch_id=batch.id, server_alias="srv-1", server_type=ServerType.LINUX, command="b"
+    )
+    commands.update_status(executed.id, status=CommandStatus.EXECUTED)
+    commands.update_status(rejected.id, status=CommandStatus.REJECTED)
+
+    assert all_terminal(commands.list_for_batch(batch.id)) is True
+
+
+def test_list_by_status_returns_only_matching_commands_across_batches(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    batches = BatchesRepo(db)
+    commands = CommandsRepo(db)
+    lot_a = batches.create(title="a", description=None, requested_by_agent=None)
+    lot_b = batches.create(title="b", description=None, requested_by_agent=None)
+    approved = commands.add(
+        batch_id=lot_a.id, server_alias="srv-1", server_type=ServerType.LINUX, command="a"
+    )
+    pending = commands.add(
+        batch_id=lot_b.id, server_alias="srv-1", server_type=ServerType.LINUX, command="b"
+    )
+    commands.update_status(approved.id, status=CommandStatus.APPROVED)
+
+    result = commands.list_by_status(CommandStatus.APPROVED)
+
+    assert [c.id for c in result] == [approved.id]
+    assert pending.id not in [c.id for c in result]
 
 
 def test_update_status_expected_status_guard_blocks_stale_transition(
