@@ -22,9 +22,11 @@ from cgate.db.server_settings import ServerSettingsRepo
 from cgate.mcp_server.tools import (
     BatchStatusResult,
     ConnectionResult,
+    ModeResult,
     ProposeCommandResult,
     ToolError,
     check_status,
+    get_mode,
     list_connections,
     propose_command,
 )
@@ -34,7 +36,11 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 ToolPayload: TypeAlias = (
-    ProposeCommandResult | BatchStatusResult | list[ConnectionResult] | dict[str, str]
+    ProposeCommandResult
+    | BatchStatusResult
+    | ModeResult
+    | list[ConnectionResult]
+    | dict[str, str]
 )
 
 
@@ -116,7 +122,21 @@ def _tools() -> list[types.Tool]:
             name="list_connections",
             description=(
                 "List saved server connections and their server_type so an agent can "
-                "select a valid alias and command dialect."
+                "select a valid alias and command dialect. Each entry also carries "
+                "`auto_allowed`, the per-server auto-execution opt-in flag."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        ),
+        types.Tool(
+            name="get_mode",
+            description=(
+                "Report the current global execution mode and which servers are "
+                "opted in for auto-execution. Read-only; safe to call any time to "
+                "learn what `propose_command` would do before invoking it."
             ),
             input_schema={
                 "type": "object",
@@ -150,7 +170,7 @@ async def _lifespan(_server: Server[None]) -> AsyncGenerator[None]:
 
 
 def build_server() -> Server[None]:
-    """Build a stateless MCP server configured with command-gate's three tools."""
+    """Build a stateless MCP server configured with command-gate's four tools."""
 
     async def on_list_tools(
         _context: ServerRequestContext[None, types.PaginatedRequestParams],
@@ -183,7 +203,12 @@ def build_server() -> Server[None]:
                         reason=arguments.get("reason"),
                     )
                 case "list_connections":
-                    payload = list_connections(connections_repo=deps.connections)
+                    payload = list_connections(
+                        connections_repo=deps.connections,
+                        settings_repo=deps.settings,
+                    )
+                case "get_mode":
+                    payload = get_mode(mode_repo=deps.mode, settings_repo=deps.settings)
                 case "check_status":
                     payload = check_status(
                         batches_repo=deps.batches,

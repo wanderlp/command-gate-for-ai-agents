@@ -4,6 +4,7 @@ from __future__ import annotations
 import getpass
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
+from cgate.db.mode import AppModeNotSetError, Mode
 from cgate.db.types import BatchId, CommandStatus
 from cgate.executor import selector
 from cgate.mcp_server.auto_resolution import resolve_auto_behavior
@@ -40,6 +41,14 @@ class ConnectionResult(TypedDict):
     server_type: str
     detection_ssh: bool
     detection_winrm: bool
+    auto_allowed: bool
+
+
+class ModeResult(TypedDict):
+    """JSON-compatible global mode and per-server auto-execution opt-ins."""
+
+    mode: str
+    auto_allowed_servers: list[str]
 
 
 class CommandStatusResult(TypedDict):
@@ -243,8 +252,10 @@ def propose_command(  # noqa: PLR0913 - boundary mirrors the specified MCP tool 
     }
 
 
-def list_connections(*, connections_repo: ConnectionsRepo) -> list[ConnectionResult]:
-    """Return saved connections and their server dialect metadata."""
+def list_connections(
+    *, connections_repo: ConnectionsRepo, settings_repo: ServerSettingsRepo
+) -> list[ConnectionResult]:
+    """Return saved connections, their server dialect metadata, and auto-execution opt-in."""
     return [
         {
             "alias": connection.alias,
@@ -252,9 +263,28 @@ def list_connections(*, connections_repo: ConnectionsRepo) -> list[ConnectionRes
             "server_type": connection.server_type.value,
             "detection_ssh": connection.detection_ssh,
             "detection_winrm": connection.detection_winrm,
+            "auto_allowed": settings_repo.get_or_default(connection.alias).auto_allowed,
         }
         for connection in connections_repo.list_all()
     ]
+
+
+def get_mode(*, mode_repo: AppModeRepo, settings_repo: ServerSettingsRepo) -> ModeResult:
+    """Report the global mode and which servers are opted in for auto-execution.
+
+    Read-only: an unset global mode is reported as PROPOSE, matching
+    ``resolve_auto_behavior``'s safe default.
+    """
+    try:
+        mode = mode_repo.get().mode
+    except AppModeNotSetError:
+        mode = Mode.PROPOSE
+    return {
+        "mode": mode.value,
+        "auto_allowed_servers": [
+            setting.server_alias for setting in settings_repo.list_all() if setting.auto_allowed
+        ],
+    }
 
 
 def check_status(

@@ -157,13 +157,29 @@ tool surface is unchanged: still `propose_command`, `list_connections`,
 schema, same names, new optional response fields (`mode`, `server_auto_allowed`,
 `effective_reason`, `result`, `approved_by`).
 
+### Pre-flight state for the AI
+
+`propose_command` only reveals the mode after it has been called. To let an AI
+agent plan with full information without triggering a proposal just to learn the
+rules, two read-only tools are available:
+
+- **`list_connections`** adds one field per entry, `auto_allowed: bool`, sourced
+  from `ServerSettingsRepo.get_or_default(alias)` (defaults to `false`). The AI
+  sees up front which servers could auto-execute.
+- **`get_mode`** returns `{mode: "propose" | "auto", auto_allowed_servers:
+  [alias, ...]}`. Read-only; an unset global mode is reported as `"propose"`
+  (same safe default as `resolve_auto_behavior`).
+
+Both are non-mutating. `get_mode` and the new field on `list_connections` are
+additive: no existing tool's schema or response shape breaks.
+
 ## Status
 
 Phase 1 complete: end-to-end propose → approve → execute → audit loop working,
 plus a round of security/robustness hardening (host key verification, TLS
 validation, DB race-condition fixes, GitHub Actions build-provenance
 attestation verification on self-update, and more).
-306 unit/integration tests pass; ruff + basedpyright pass with a handful of
+321 unit/integration tests pass; ruff + basedpyright pass with a handful of
 accepted pre-existing findings (no known bugs, just style/complexity debt).
 
 ## Development

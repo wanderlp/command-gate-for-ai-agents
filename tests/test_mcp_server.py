@@ -25,6 +25,7 @@ from cgate.mcp_server.tools import (
     ProposeCommandResult,
     ToolError,
     check_status,
+    get_mode,
     list_connections,
     propose_command,
 )
@@ -191,7 +192,9 @@ def test_list_connections_returns_alias_and_server_type_for_each(tmp_path: Path)
     db = _db(tmp_path)
     _add_connection(db, "beta")
     _add_connection(db, "alpha")
-    result = list_connections(connections_repo=ConnectionsRepo(db))
+    result = list_connections(
+        connections_repo=ConnectionsRepo(db), settings_repo=ServerSettingsRepo(db)
+    )
     assert [(item["alias"], item["server_type"]) for item in result] == [
         ("alpha", "windows"),
         ("beta", "windows"),
@@ -199,7 +202,67 @@ def test_list_connections_returns_alias_and_server_type_for_each(tmp_path: Path)
 
 
 def test_list_connections_returns_empty_list_when_no_saved_connections(tmp_path: Path) -> None:
-    assert list_connections(connections_repo=ConnectionsRepo(_db(tmp_path))) == []
+    db = _db(tmp_path)
+    result = list_connections(
+        connections_repo=ConnectionsRepo(db), settings_repo=ServerSettingsRepo(db)
+    )
+    assert result == []
+
+
+def test_list_connections_includes_auto_allowed_false_by_default(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    _add_connection(db)
+    result = list_connections(
+        connections_repo=ConnectionsRepo(db), settings_repo=ServerSettingsRepo(db)
+    )
+    assert result[0]["auto_allowed"] is False
+
+
+def test_list_connections_includes_auto_allowed_true_when_opted_in(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    _add_connection(db)
+    _ = ServerSettingsRepo(db).set(alias="srv", auto_allowed=True, updated_by="test")
+    result = list_connections(
+        connections_repo=ConnectionsRepo(db), settings_repo=ServerSettingsRepo(db)
+    )
+    assert result[0]["auto_allowed"] is True
+
+
+def test_list_connections_mixes_opted_in_and_default(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    _add_connection(db, "alpha")
+    _add_connection(db, "beta")
+    _ = ServerSettingsRepo(db).set(alias="beta", auto_allowed=True, updated_by="test")
+    result = list_connections(
+        connections_repo=ConnectionsRepo(db), settings_repo=ServerSettingsRepo(db)
+    )
+    assert {item["alias"]: item["auto_allowed"] for item in result} == {
+        "alpha": False,
+        "beta": True,
+    }
+
+
+def test_get_mode_returns_propose_when_mode_unset(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    result = get_mode(mode_repo=AppModeRepo(db), settings_repo=ServerSettingsRepo(db))
+    assert result == {"mode": "propose", "auto_allowed_servers": []}
+
+
+def test_get_mode_returns_auto_when_mode_set(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    _ = AppModeRepo(db).set(mode=Mode.AUTO, updated_by="test")
+    result = get_mode(mode_repo=AppModeRepo(db), settings_repo=ServerSettingsRepo(db))
+    assert result["mode"] == "auto"
+
+
+def test_get_mode_lists_only_auto_allowed_servers(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    settings = ServerSettingsRepo(db)
+    _ = settings.set(alias="alpha", auto_allowed=True, updated_by="test")
+    _ = settings.set(alias="beta", auto_allowed=False, updated_by="test")
+    _ = settings.set(alias="gamma", auto_allowed=True, updated_by="test")
+    result = get_mode(mode_repo=AppModeRepo(db), settings_repo=settings)
+    assert result["auto_allowed_servers"] == ["alpha", "gamma"]
 
 
 def test_check_status_returns_batch_metadata_and_commands_in_order(tmp_path: Path) -> None:
@@ -257,11 +320,11 @@ async def _with_client(action: Callable[[ClientSession], Awaitable[None]]) -> No
             task_group.cancel_scope.cancel()
 
 
-def test_mcp_server_lists_three_tools_on_list_tools() -> None:
+def test_mcp_server_lists_four_tools_on_list_tools() -> None:
     async def action(session: ClientSession) -> None:
         result = await session.list_tools()
         assert {tool.name for tool in result.tools} == {
-            "propose_command", "list_connections", "check_status"
+            "propose_command", "list_connections", "check_status", "get_mode"
         }
 
     anyio.run(_with_client, action)
