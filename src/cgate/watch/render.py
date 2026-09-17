@@ -1,4 +1,4 @@
-"""Pure markup helpers for the cgate watch TUI (spec §Colores en cgate watch)."""
+"""Pure markup helpers for the cgate watch TUI (spec §Colors in cgate watch)."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def format_waiting_notice(waiting_count: int) -> str:
     """Render the queued-lot notice, or an empty string when nothing is waiting."""
     if waiting_count <= 0:
         return ""
-    return f"[yellow]▲ {waiting_count} lote(s) en espera[/yellow]"
+    return f"[yellow]▲ {waiting_count} batch(es) waiting[/yellow]"
 
 
 def _result_snippet(result: str) -> str:

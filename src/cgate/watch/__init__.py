@@ -1,4 +1,4 @@
-"""Interactive approval TUI for `cgate watch` (spec §Cola de aprobación)."""
+"""Interactive approval TUI for `cgate watch` (spec §Approval queue)."""
 
 from __future__ import annotations
 

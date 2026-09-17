@@ -75,15 +75,15 @@ class ModeModal(ModalScreen[bool]):
             current = Mode.PROPOSE
         self._target = Mode.AUTO if current is Mode.PROPOSE else Mode.PROPOSE
         with Vertical(id="mode-dialog"):
-            yield Static("[bold]Cambiar modo global[/bold]")
-            yield Static(f"Modo actual: {mode_markup(current)}")
-            yield Static(f"Cambiar a:   {mode_markup(self._target)}")
+            yield Static("[bold]Switch global mode[/bold]")
+            yield Static(f"Current mode: {mode_markup(current)}")
+            yield Static(f"Switch to:    {mode_markup(self._target)}")
             if self._target is Mode.AUTO:
                 yield Static(
-                    "[red]En modo AUTO los comandos de servidores con auto-approve "
-                    "se ejecutan sin aprobación manual.[/red]"
+                    "[red]In AUTO mode, commands for servers with auto-approve "
+                    "run without manual approval.[/red]"
                 )
-            yield Static("[dim]y = confirmar — cualquier otra tecla cancela[/dim]")
+            yield Static("[dim]y = confirm — any other key cancels[/dim]")
             yield Static("", id="mode-error")
 
     def on_key(self, event: Key) -> None:
@@ -95,7 +95,7 @@ class ModeModal(ModalScreen[bool]):
             _ = self._mode_repo.set(mode=self._target, updated_by=_updated_by())
         except sqlite3.Error as exc:
             _ = self.query_one("#mode-error", Static).update(
-                f"[red]No se pudo guardar el modo:[/red] {exc}"
+                f"[red]Could not save the mode:[/red] {exc}"
             )
             return
         self.dismiss(True)  # noqa: FBT003 - ModalScreen[bool].dismiss takes the result positionally

@@ -42,14 +42,14 @@ unattended: the global mode is AUTO *and* that specific server is opted in.
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│ cgate watch          MODO: AUTO ⚡ | 1 servers auto-allowed │
+│ cgate watch          MODE: AUTO ⚡ | 1 servers auto-allowed  │
 ├─────────────────────────────────────────────────────────────┤
-│ [Cola]             [Servers]                                │
+│ [Queue]            [Servers]                                │
 │ ▶ "deploy v2"      dev-1   LNX [✓]                         │
 │                    stage-2 LNX [ ]                          │
 │                    prod-db WIN [ ]                          │
 ├─────────────────────────────────────────────────────────────┤
-│ [y]aprobar [n]rechazar [a]aprobar lote [m]odo [s]ervers ... │
+│ [y]approve [n]reject [a]approve batch [m]ode [s]ervers ...  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -63,7 +63,7 @@ keystrokes can.
 
 ### Why two switches?
 
-If you leave `MODO: AUTO` on by accident, the worst case is that nothing runs on
+If you leave `MODE: AUTO` on by accident, the worst case is that nothing runs on
 servers that haven't been explicitly opted in. To actually run something
 unattended you must enable the mode **and** flip the per-server switch. Belt and
 suspenders, default-safe at every level.

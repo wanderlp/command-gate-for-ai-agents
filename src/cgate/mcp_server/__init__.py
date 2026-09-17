@@ -1,4 +1,4 @@
-"""MCP server exposing three tools to AI agents (spec §El servidor MCP)."""
+"""MCP server exposing three tools to AI agents (spec §The MCP server)."""
 from __future__ import annotations
 
 from cgate.mcp_server.server import build_server

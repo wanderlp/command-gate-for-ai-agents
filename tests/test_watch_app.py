@@ -73,7 +73,7 @@ def test_idle_state_when_queue_is_empty(repos: Repos) -> None:
             return str(panel.query_one("#active-header").content)
 
     header_text = asyncio.run(scenario())
-    assert "Sin lotes pendientes" in header_text
+    assert "No pending batches" in header_text
 
 
 def test_approve_one_executes_and_advances(repos: Repos) -> None:
@@ -150,7 +150,7 @@ def test_refresh_renders_clean_message_on_sqlite_error(repos: Repos) -> None:
 
     out = asyncio.run(scenario())
     assert "database is locked" in out
-    assert "bloqueando" in out.lower()
+    assert "locking" in out.lower()
 
 
 def test_refresh_survives_db_error_in_subsequent_call(repos: Repos) -> None:
@@ -174,7 +174,7 @@ def test_refresh_survives_db_error_in_subsequent_call(repos: Repos) -> None:
 
     notice, sub = asyncio.run(scenario())
     assert "database is locked" in notice
-    assert sub == "error de base de datos"
+    assert sub == "database error"
 
 
 def test_first_pending_returns_none_on_db_error(repos: Repos) -> None:

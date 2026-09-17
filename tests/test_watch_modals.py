@@ -82,7 +82,7 @@ def test_header_shows_propose_by_default(repos: Repos) -> None:
             return _mode_indicator(app)
 
     header = asyncio.run(scenario())
-    assert "MODO:" in header
+    assert "MODE:" in header
     assert "PROPOSE" in header
     assert "auto-allowed" not in header
 
@@ -101,7 +101,7 @@ def test_header_shows_auto_with_server_count(repos: Repos) -> None:
 
     header = asyncio.run(scenario())
     assert "AUTO" in header
-    assert "1 servers auto-allowed (de 2)" in header
+    assert "1 servers auto-allowed (of 2)" in header
 
 
 def test_mode_modal_confirm_switches_mode(repos: Repos) -> None:

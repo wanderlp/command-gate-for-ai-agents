@@ -81,9 +81,9 @@ class ServerSettingsModal(ModalScreen[bool]):
     # Priority bindings: checked before the focused ListView's own bindings,
     # so Enter commits instead of triggering ListView's row-select.
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("space", "toggle_row", "Alternar", show=False, priority=True),
-        Binding("enter", "commit", "Guardar", show=False, priority=True),
-        Binding("escape", "cancel", "Cancelar", show=False, priority=True),
+        Binding("space", "toggle_row", "Toggle", show=False, priority=True),
+        Binding("enter", "commit", "Save", show=False, priority=True),
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
 
     _connections: ConnectionsRepo  # class-level annotation required by strict mode
@@ -116,9 +116,9 @@ class ServerSettingsModal(ModalScreen[bool]):
             # Safe-by-default: an unset mode behaves as PROPOSE everywhere else.
             current = Mode.PROPOSE
         with Vertical(id="settings-dialog"):
-            yield Static("[bold]Auto-approve por servidor[/bold]")
-            yield Static(f"Modo global: {mode_markup(current)}")
-            yield Static("[dim]Espacio = alternar — Enter = guardar — Esc = cancelar[/dim]")
+            yield Static("[bold]Auto-approve per server[/bold]")
+            yield Static(f"Global mode: {mode_markup(current)}")
+            yield Static("[dim]Space = toggle — Enter = save — Esc = cancel[/dim]")
             yield ListView(id="settings-list")
             yield Static("", id="settings-error")
 
@@ -134,7 +134,7 @@ class ServerSettingsModal(ModalScreen[bool]):
                 _ = list_view.append(ServerRow(connection, auto_allowed=allowed))
         except sqlite3.Error as exc:
             _ = self.query_one("#settings-error", Static).update(
-                f"[red]No se pudieron leer los servidores:[/red] {exc}"
+                f"[red]Could not read the servers:[/red] {exc}"
             )
             return
         if self._state:
@@ -163,7 +163,7 @@ class ServerSettingsModal(ModalScreen[bool]):
                     )
         except sqlite3.Error as exc:
             _ = self.query_one("#settings-error", Static).update(
-                f"[red]No se pudieron guardar los cambios:[/red] {exc}"
+                f"[red]Could not save the changes:[/red] {exc}"
             )
             return
         self.dismiss(True)  # noqa: FBT003 - ModalScreen[bool].dismiss takes the result positionally

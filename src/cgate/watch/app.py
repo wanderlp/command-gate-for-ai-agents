@@ -1,4 +1,4 @@
-"""Full-screen Textual dashboard for `cgate watch` (spec §Cola de aprobación).
+"""Full-screen Textual dashboard for `cgate watch` (spec §Approval queue).
 
 Replaces the earlier linear y/n/a/r prompt with a live view: a sidebar shows
 the FIFO batch queue, the main panel shows the active batch's commands, and
@@ -49,7 +49,7 @@ class QueueSidebar(Vertical):
     @override
     def compose(self) -> ComposeResult:
         """Build the static title and the batch list view."""
-        yield Static("[bold]Cola[/bold]", classes="sidebar-title")
+        yield Static("[bold]Queue[/bold]", classes="sidebar-title")
         yield ListView(id="queue-list")
 
     def refresh_queue(self, pending: list[Batch], active_id: BatchId | None) -> None:
@@ -75,9 +75,9 @@ class ModeHeader(Horizontal):
 
     def show_mode(self, mode: Mode, *, auto_allowed: int, total: int) -> None:
         """Render the mode label; only AUTO also shows the auto-allowed count."""
-        text = f"MODO: {mode_markup(mode)}"
+        text = f"MODE: {mode_markup(mode)}"
         if mode is Mode.AUTO:
-            text += f" [dim]|[/dim] {auto_allowed} servers auto-allowed (de {total})"
+            text += f" [dim]|[/dim] {auto_allowed} servers auto-allowed (of {total})"
         _ = self.query_one("#mode-indicator", Static).update(text)
 
 
@@ -132,7 +132,7 @@ class ActivePanel(VerticalScroll):
         """Show the empty-queue placeholder and drop any stale rows."""
         self._shown_batch_id = None
         _ = self.query_one("#active-header", Static).update(
-            "[dim]Sin lotes pendientes — esperando nuevas propuestas…[/dim]"
+            "[dim]No pending batches — waiting for new proposals…[/dim]"
         )
         _ = self.query_one("#rows", Vertical).remove_children()
 
@@ -175,13 +175,13 @@ class WatchApp(App[None]):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("y", "approve_one", "Aprobar"),
-        Binding("n", "reject_one", "Rechazar"),
-        Binding("a", "approve_all", "Aprobar todo"),
-        Binding("r", "reject_all", "Rechazar todo"),
-        Binding("m", "toggle_mode", "Modo"),
+        Binding("y", "approve_one", "Approve"),
+        Binding("n", "reject_one", "Reject"),
+        Binding("a", "approve_all", "Approve all"),
+        Binding("r", "reject_all", "Reject all"),
+        Binding("m", "toggle_mode", "Mode"),
         Binding("s", "server_settings", "Servers"),
-        Binding("q", "quit", "Salir"),
+        Binding("q", "quit", "Quit"),
     ]
 
     _db: Database  # class-level annotation required by strict mode
@@ -249,11 +249,11 @@ class WatchApp(App[None]):
         try:
             notice = self.query_one("#waiting-notice", Static)
             _ = notice.update(
-                f"[red]No se pudo leer la base de datos:[/red] {exc}\n"
-                "[dim]Revisa que ningún otro proceso cgate esté bloqueando "
-                "cgate.db. La próxima lectura lo reintentará automáticamente.[/dim]"
+                f"[red]Could not read the database:[/red] {exc}\n"
+                "[dim]Check that no other cgate process is locking "
+                "cgate.db. The next read will retry automatically.[/dim]"
             )
-            self.sub_title = "error de base de datos"  # pyright: ignore[reportUnannotatedClassAttribute]
+            self.sub_title = "database error"  # pyright: ignore[reportUnannotatedClassAttribute]
         except Exception:
             pass
 
@@ -290,12 +290,12 @@ class WatchApp(App[None]):
                 panel.show_idle()
                 # Reactive[str] on the base class; reassigning it is the documented
                 # Textual pattern, but basedpyright wants a same-interval annotation.
-                self.sub_title = "sin lotes pendientes"  # pyright: ignore[reportUnannotatedClassAttribute]
+                self.sub_title = "no pending batches"  # pyright: ignore[reportUnannotatedClassAttribute]
                 return
             commands_in_batch = self._commands.list_for_batch(active.id)
             panel.show_batch(active, commands_in_batch)
             pending_here = len(pending_commands_in_batch(commands_in_batch))
-            self.sub_title = f"{pending_here} pendiente(s)"
+            self.sub_title = f"{pending_here} pending"
         except sqlite3.Error as exc:
             self._render_db_error(exc)
 
