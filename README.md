@@ -11,6 +11,10 @@ every proposal, decision, and result is recorded.
 You stop choosing between "the agent can't actually do anything" and "the agent can do
 anything, unsupervised."
 
+> **⚠️ Beta.** `cgate` is under active development. Expect rough edges, breaking
+> changes between releases, and incoming revisions as it matures — feedback and bug
+> reports are welcome.
+
 ## Why teams use it
 
 - **Agents propose, humans decide.** Every command an AI agent wants to run on a
