@@ -76,6 +76,21 @@ SELECT * FROM commands WHERE approved_by LIKE 'auto:%';
 You'll see exactly what your AI ran while you weren't looking, who it claimed to
 be, when, and on which server.
 
+### What the AI sees (and what it can ask first)
+
+The MCP server exposes three read-only tools the AI can use to plan with full
+information, plus `propose_command` to act:
+
+- **`list_connections`** — every saved connection and its `auto_allowed` flag
+  (the AI knows up front which servers could auto-execute).
+- **`get_mode`** — the current global mode (`propose` or `auto`) and the list of
+  aliases opted into auto-execution. Read-only, safe to call any time.
+- **`check_status`** — what's pending in a given batch.
+
+With these, the AI never has to guess whether a command will auto-run or wait
+for you — it can call `get_mode` and `list_connections` first, plan accordingly,
+and only invoke `propose_command` when it knows what will happen.
+
 ## Get started
 
 1. Download the binary for your platform from the
