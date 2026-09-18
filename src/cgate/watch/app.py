@@ -18,6 +18,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, ListItem, ListView, Static
 from typing_extensions import override
 
+from cgate import __version__
 from cgate.db.mode import AppModeNotSetError, Mode
 from cgate.watch.approval import (
     CommandDisappearedError,
@@ -37,6 +38,7 @@ from cgate.watch.queue import (
 )
 from cgate.watch.render import format_batch_header, format_queue_summary, server_badge
 from cgate.watch.server_settings_modal import ServerSettingsModal
+from cgate.watch.theme import CGATE_THEME
 from cgate.watch.widgets import CommandRow
 
 if TYPE_CHECKING:
@@ -61,7 +63,7 @@ class BatchRow(ListItem):
     def __init__(self, batch: Batch, *, active: bool) -> None:
         """Render the marker/title and remember which batch this row is."""
         marker = "▶" if active else " "
-        style = "bold cyan" if active else "dim"
+        style = f"bold {CGATE_THEME.primary}" if active else "dim"
         super().__init__(
             Static(f"{marker} [{style}]{escape_markup(batch.title)}[/{style}]", markup=True)
         )
@@ -123,7 +125,7 @@ class ModeHeader(Horizontal):
     @override
     def compose(self) -> ComposeResult:
         """Build the title static and the right-aligned mode indicator."""
-        yield Static("[bold]cgate watch[/bold]", id="mode-title")
+        yield Static(f"🔐 [bold]cgate watch[/bold]  [dim]v{__version__}[/dim]", id="mode-title")
         yield Static(id="mode-indicator")
 
     def show_mode(self, mode: Mode, *, auto_allowed: int, total: int) -> None:
@@ -217,7 +219,7 @@ class WatchApp(App[None]):
     CSS: ClassVar[str] = """
     Screen { background: $surface; }
     ModeHeader { dock: top; height: 1; background: $panel; padding: 0 1; }
-    #mode-title { width: auto; }
+    #mode-title { width: auto; color: $primary; }
     #mode-indicator { width: 1fr; text-align: right; }
     #body { height: 1fr; }
     #sidebar { width: 36; border-right: solid $panel; }
@@ -264,6 +266,8 @@ class WatchApp(App[None]):
     ) -> None:
         """Store the repository collaborators used to read and mutate the queue."""
         super().__init__()
+        self.register_theme(CGATE_THEME)
+        self.theme = CGATE_THEME.name  # pyright: ignore[reportUnannotatedClassAttribute]
         self._db = db
         self._batches = batches
         self._commands = commands
@@ -317,9 +321,10 @@ class WatchApp(App[None]):
         dashboard; the next polling tick (or the user's next keypress)
         will retry the read automatically.
         """
+        error = CGATE_THEME.error
         self._render_notice(
             (
-                f"[red]Could not read the database:[/red] {exc}\n"
+                f"[{error}]Could not read the database:[/{error}] {exc}\n"
                 "[dim]Check that no other cgate process is locking "
                 "cgate.db. The next read will retry automatically.[/dim]"
             ),
@@ -337,7 +342,10 @@ class WatchApp(App[None]):
         command. The busy flag is still released by `_approve`'s
         `finally`, so the rest of the queue stays fully usable.
         """
-        self._render_notice(f"[red]Could not approve this command:[/red] {exc}", "approval error")
+        error = CGATE_THEME.error
+        self._render_notice(
+            f"[{error}]Could not approve this command:[/{error}] {exc}", "approval error"
+        )
 
     def _global_mode(self) -> Mode:
         """Return the persisted global mode, defaulting to PROPOSE when unset."""

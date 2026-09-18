@@ -7,18 +7,23 @@ from typing import TYPE_CHECKING, Final
 from rich.markup import escape as escape_markup
 
 from cgate.db.types import CommandStatus, ServerType
+from cgate.watch.theme import CGATE_THEME
 
 if TYPE_CHECKING:
     from cgate.db.types import Batch, Command
 
 _RESULT_SNIPPET_MAX_CHARS: Final = 200
 
+# Rich markup can't reference Textual's $warning/$error/$success CSS
+# variables directly, so these pull the same hex values from CGATE_THEME
+# instead of hardcoding Rich's generic "yellow"/"red"/"green" names --
+# otherwise the two would drift apart the moment the theme's palette changes.
 _STATUS_GLYPHS: Final[dict[CommandStatus, str]] = {
-    CommandStatus.PENDING: "[yellow]●[/yellow]",
-    CommandStatus.APPROVED: "[yellow]◐[/yellow]",
-    CommandStatus.EXECUTED: "[green]✓[/green]",
-    CommandStatus.REJECTED: "[red]✗[/red]",
-    CommandStatus.FAILED: "[red]✗[/red]",
+    CommandStatus.PENDING: f"[{CGATE_THEME.warning}]●[/{CGATE_THEME.warning}]",
+    CommandStatus.APPROVED: f"[{CGATE_THEME.warning}]◐[/{CGATE_THEME.warning}]",
+    CommandStatus.EXECUTED: f"[{CGATE_THEME.success}]✓[/{CGATE_THEME.success}]",
+    CommandStatus.REJECTED: f"[{CGATE_THEME.error}]✗[/{CGATE_THEME.error}]",
+    CommandStatus.FAILED: f"[{CGATE_THEME.error}]✗[/{CGATE_THEME.error}]",
 }
 
 
@@ -59,12 +64,14 @@ def risk_warning(risk_label: str | None) -> str:
     """
     if not risk_label:
         return ""
-    return f"[bold red]⚠ RISKY:[/bold red] [red]{escape_markup(risk_label)}[/red]"
+    error = CGATE_THEME.error
+    return f"[bold {error}]⚠ RISKY:[/bold {error}] [{error}]{escape_markup(risk_label)}[/{error}]"
 
 
 def format_batch_header(batch: Batch) -> str:
-    """Render a bold cyan title with an optional grey italic description below it."""
-    lines = [f"[bold cyan]{escape_markup(batch.title)}[/bold cyan]"]
+    """Render a bold, brand-colored title with an optional grey italic description below it."""
+    primary = CGATE_THEME.primary
+    lines = [f"[bold {primary}]{escape_markup(batch.title)}[/bold {primary}]"]
     if batch.description:
         lines.append(f"[grey50 italic]{escape_markup(batch.description)}[/grey50 italic]")
     return "\n".join(lines)
@@ -83,7 +90,8 @@ def format_queue_summary(*, pending_commands: int, waiting_batches: int) -> str:
     parts = [f"{pending_commands} pending command(s)"]
     if waiting_batches > 0:
         parts.append(f"{waiting_batches} batch(es) waiting")
-    return f"[yellow]▲ {' · '.join(parts)}[/yellow]"
+    warning = CGATE_THEME.warning
+    return f"[{warning}]▲ {' · '.join(parts)}[/{warning}]"
 
 
 def _result_snippet(result: str, *, max_chars: int = _RESULT_SNIPPET_MAX_CHARS) -> str:
@@ -115,7 +123,8 @@ def format_command_line(command: Command) -> str:
     elif command.status is CommandStatus.EXECUTED and command.result:
         line += f"\n    [dim]{escape_markup(_result_snippet(command.result))}[/dim]"
     elif command.status is CommandStatus.FAILED and command.result:
-        line += f"\n    [red dim]{escape_markup(_result_snippet(command.result))}[/red dim]"
+        error = CGATE_THEME.error
+        line += f"\n    [{error} dim]{escape_markup(_result_snippet(command.result))}[/{error} dim]"
     return line
 
 

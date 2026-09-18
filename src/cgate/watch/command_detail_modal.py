@@ -32,7 +32,7 @@ class CommandDetailModal(ModalScreen[None]):
     #detail-dialog {
         width: 90%;
         height: 80%;
-        border: solid $panel;
+        border: round $primary;
         background: $surface;
         padding: 1 2;
     }

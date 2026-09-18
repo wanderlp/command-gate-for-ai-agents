@@ -19,6 +19,7 @@ from typing_extensions import override
 
 from cgate.watch.command_detail_modal import CommandDetailModal
 from cgate.watch.render import format_batch_header
+from cgate.watch.theme import CGATE_THEME
 from cgate.watch.widgets import CommandRow
 
 if TYPE_CHECKING:
@@ -52,7 +53,7 @@ class HistoryModal(ModalScreen[None]):
     #history-dialog {
         width: 96%;
         height: 90%;
-        border: solid $panel;
+        border: round $primary;
         background: $surface;
     }
     #history-title { padding: 1 2 0 2; }
@@ -103,8 +104,9 @@ class HistoryModal(ModalScreen[None]):
         try:
             self._resolved = self._batches.list_resolved(limit=_HISTORY_LIMIT)
         except sqlite3.Error as exc:
+            error = CGATE_THEME.error
             self.query_one("#history-detail-header", Static).update(
-                f"[red]Could not read history:[/red] {exc}"
+                f"[{error}]Could not read history:[/{error}] {exc}"
             )
             return
         list_view = self.query_one("#history-list", ListView)
@@ -138,8 +140,9 @@ class HistoryModal(ModalScreen[None]):
         try:
             command = self._commands.get(row.command_id)
         except sqlite3.Error as exc:
+            error = CGATE_THEME.error
             self.query_one("#history-detail-header", Static).update(
-                f"[red]Could not read this command:[/red] {exc}"
+                f"[{error}]Could not read this command:[/{error}] {exc}"
             )
             return
         if command is not None:
@@ -153,8 +156,9 @@ class HistoryModal(ModalScreen[None]):
         try:
             commands_in_batch = self._commands.list_for_batch(batch.id)
         except sqlite3.Error as exc:
+            error = CGATE_THEME.error
             self.query_one("#history-detail-header", Static).update(
-                f"[red]Could not read this batch's commands:[/red] {exc}"
+                f"[{error}]Could not read this batch's commands:[/{error}] {exc}"
             )
             return
         for command in commands_in_batch:

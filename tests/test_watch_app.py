@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 from textual.widgets import ListView
 
+from cgate import __version__
 from cgate.connections.store import ConnectionsRepo
 from cgate.db.batches import BatchesRepo
 from cgate.db.commands import CommandsRepo
@@ -66,6 +67,27 @@ def _app(repos: Repos) -> WatchApp:
 
 def _success() -> ExecutionResult:
     return ExecutionResult("hello\n", "", 0, 42, None)
+
+
+def test_app_registers_and_activates_the_cgate_theme(repos: Repos) -> None:
+    async def scenario() -> str:
+        async with _app(repos).run_test() as pilot:
+            await pilot.pause()
+            return str(pilot.app.theme)
+
+    active_theme = asyncio.run(scenario())
+    assert active_theme == "cgate"
+
+
+def test_title_shows_the_installed_cgate_version(repos: Repos) -> None:
+    async def scenario() -> str:
+        async with _app(repos).run_test() as pilot:
+            await pilot.pause()
+            return str(pilot.app.query_one("#mode-title").content)
+
+    title_text = asyncio.run(scenario())
+    assert "cgate watch" in title_text
+    assert __version__ in title_text
 
 
 def test_idle_state_when_queue_is_empty(repos: Repos) -> None:

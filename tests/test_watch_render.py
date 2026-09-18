@@ -12,7 +12,9 @@ from cgate.watch.render import (
     format_command_line,
     format_queue_summary,
     risk_warning,
+    status_glyph,
 )
+from cgate.watch.theme import CGATE_THEME
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -122,6 +124,19 @@ def test_risk_warning_escapes_markup_in_the_label() -> None:
     assert "\\[bold]" in risk_warning("[bold]evil[/bold]")
 
 
+def test_risk_warning_uses_the_theme_error_color() -> None:
+    """Rich markup can't reference Textual's $error CSS variable, so this
+    must pull the same hex value from CGATE_THEME instead of a hardcoded
+    Rich color name that could drift from the app's actual theme."""
+    assert CGATE_THEME.error in risk_warning("some risky command")
+
+
+def test_status_glyph_colors_come_from_the_theme() -> None:
+    assert CGATE_THEME.warning in status_glyph(CommandStatus.PENDING)
+    assert CGATE_THEME.success in status_glyph(CommandStatus.EXECUTED)
+    assert CGATE_THEME.error in status_glyph(CommandStatus.FAILED)
+
+
 def test_format_command_line_includes_risk_warning_regardless_of_status() -> None:
     """Item 3: the human should see the flag in both PROPOSE and AUTO --
     this only checks rendering, so it applies whatever status a risky
@@ -151,6 +166,10 @@ def test_format_command_detail_includes_risk_warning() -> None:
 def test_format_batch_header_escapes_markup_in_title() -> None:
     header = format_batch_header(_batch(title="[red]fake[/red] title"))
     assert "\\[red]" in header
+
+
+def test_format_batch_header_uses_the_theme_primary_color() -> None:
+    assert CGATE_THEME.primary in format_batch_header(_batch())
 
 
 def test_format_queue_summary_empty_when_nothing_pending() -> None:

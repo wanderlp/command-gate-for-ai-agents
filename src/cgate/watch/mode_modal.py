@@ -12,6 +12,7 @@ from textual.widgets import Static
 from typing_extensions import override
 
 from cgate.db.mode import AppModeNotSetError, Mode
+from cgate.watch.theme import CGATE_THEME
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -29,12 +30,14 @@ def _updated_by() -> str:
 
 
 def mode_markup(mode: Mode) -> str:
-    """Render a mode label: yellow for PROPOSE (safe), red for AUTO (live fire)."""
+    """Render a mode label: warning-colored for PROPOSE (safe), error for AUTO (live fire)."""
     match mode:
         case Mode.PROPOSE:
-            return "[yellow]PROPOSE[/yellow]"
+            warning = CGATE_THEME.warning
+            return f"[{warning}]PROPOSE[/{warning}]"
         case Mode.AUTO:
-            return "[red]AUTO ⚡[/red]"
+            error = CGATE_THEME.error
+            return f"[{error}]AUTO ⚡[/{error}]"
 
 
 class ModeModal(ModalScreen[bool]):
@@ -49,11 +52,11 @@ class ModeModal(ModalScreen[bool]):
     #mode-dialog {
         width: 64;
         height: auto;
-        border: solid $panel;
+        border: round $primary;
         background: $surface;
         padding: 1 2;
     }
-    #mode-error { color: red; }
+    #mode-error { color: $error; }
     """
 
     _mode_repo: AppModeRepo  # class-level annotation required by strict mode
@@ -79,10 +82,12 @@ class ModeModal(ModalScreen[bool]):
             yield Static(f"Current mode: {mode_markup(current)}")
             yield Static(f"Switch to:    {mode_markup(self._target)}")
             if self._target is Mode.AUTO:
-                yield Static(
-                    "[red]In AUTO mode, commands for servers with auto-approve "
-                    "run without manual approval.[/red]"
+                error = CGATE_THEME.error
+                warning_text = (
+                    f"[{error}]In AUTO mode, commands for servers with auto-approve "
+                    f"run without manual approval.[/{error}]"
                 )
+                yield Static(warning_text)
             yield Static("[dim]y = confirm — any other key cancels[/dim]")
             yield Static("", id="mode-error")
 
@@ -94,8 +99,9 @@ class ModeModal(ModalScreen[bool]):
         try:
             _ = self._mode_repo.set(mode=self._target, updated_by=_updated_by())
         except sqlite3.Error as exc:
+            error = CGATE_THEME.error
             _ = self.query_one("#mode-error", Static).update(
-                f"[red]Could not save the mode:[/red] {exc}"
+                f"[{error}]Could not save the mode:[/{error}] {exc}"
             )
             return
         self.dismiss(True)  # noqa: FBT003 - ModalScreen[bool].dismiss takes the result positionally

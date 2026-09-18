@@ -15,6 +15,7 @@ from typing_extensions import override
 from cgate.db.mode import AppModeNotSetError, Mode
 from cgate.watch.mode_modal import mode_markup
 from cgate.watch.render import server_badge
+from cgate.watch.theme import CGATE_THEME
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -70,12 +71,12 @@ class ServerSettingsModal(ModalScreen[bool]):
         width: 72;
         height: auto;
         max-height: 80%;
-        border: solid $panel;
+        border: round $primary;
         background: $surface;
         padding: 1 2;
     }
     #settings-list { height: auto; max-height: 16; margin-top: 1; }
-    #settings-error { color: red; }
+    #settings-error { color: $error; }
     """
 
     # Priority bindings: checked before the focused ListView's own bindings,
@@ -133,8 +134,9 @@ class ServerSettingsModal(ModalScreen[bool]):
                 self._initial[connection.alias] = allowed
                 _ = list_view.append(ServerRow(connection, auto_allowed=allowed))
         except sqlite3.Error as exc:
+            error = CGATE_THEME.error
             _ = self.query_one("#settings-error", Static).update(
-                f"[red]Could not read the servers:[/red] {exc}"
+                f"[{error}]Could not read the servers:[/{error}] {exc}"
             )
             return
         if self._state:
@@ -162,8 +164,9 @@ class ServerSettingsModal(ModalScreen[bool]):
                         updated_by=_updated_by(),
                     )
         except sqlite3.Error as exc:
+            error = CGATE_THEME.error
             _ = self.query_one("#settings-error", Static).update(
-                f"[red]Could not save the changes:[/red] {exc}"
+                f"[{error}]Could not save the changes:[/{error}] {exc}"
             )
             return
         self.dismiss(True)  # noqa: FBT003 - ModalScreen[bool].dismiss takes the result positionally
