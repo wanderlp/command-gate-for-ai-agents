@@ -235,6 +235,16 @@ on Windows" below):
 uv run python scripts/build-binary.py --name=cgate-helper --entry=src/cgate/helper/__main__.py --minimal --windowed
 ```
 
+To regenerate the `cgate watch` screenshots in the README after a UI change:
+
+```console
+uv run python scripts/render_demo_screenshots.py
+```
+
+Seeds a throwaway DB with fake batches, drives the app headlessly via
+Textual's own test pilot, and exports `docs/img/*.svg` -- no real servers
+involved.
+
 ## Layout
 
 ```text

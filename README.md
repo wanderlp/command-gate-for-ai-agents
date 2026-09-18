@@ -40,18 +40,7 @@ target server is on your allow-list**. Servers are off by default — you opt th
 explicitly. Two switches need to land in the "go" position before anything runs
 unattended: the global mode is AUTO *and* that specific server is opted in.
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│ cgate watch          MODE: AUTO ⚡ | 1 servers auto-allowed  │
-├─────────────────────────────────────────────────────────────┤
-│ [Queue]            [Servers]                                │
-│ ▶ "deploy v2"      dev-1   LNX [✓]                         │
-│                    stage-2 LNX [ ]                          │
-│                    prod-db WIN [ ]                          │
-├─────────────────────────────────────────────────────────────┤
-│ [y]approve [n]reject [a]approve batch [m]ode [h]istory ...  │
-└─────────────────────────────────────────────────────────────┘
-```
+![cgate watch: the approval queue, mid-batch, with a risky command flagged](./docs/img/watch-dashboard.svg)
 
 ↑/↓ + Enter on the queue sidebar jumps straight to any pending batch — you're not
 forced to clear the queue in strict arrival order to get to the one you actually
@@ -93,6 +82,8 @@ resolved batch, see the agent's stated `reason` for wanting the command, and vie
 the full, untruncated result. Press **`/`** there to filter live against a batch's
 title, its commands, and their server aliases all at once -- `Esc` clears the
 filter first, then closes the screen on a second press.
+
+![cgate watch history: the fzf/vim-style live filter narrowing resolved batches](./docs/img/watch-history.svg)
 
 Need it outside the TUI — for a compliance report, or just to grep offline?
 
