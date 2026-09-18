@@ -90,7 +90,9 @@ Every command a batch ever queued shows an `⚙ auto` or `👤 <username>` badge
 to it, so you always know whether a human or AUTO mode approved it — and once a
 batch resolves, it doesn't vanish: press **`h`** in `cgate watch` to browse every
 resolved batch, see the agent's stated `reason` for wanting the command, and view
-the full, untruncated result.
+the full, untruncated result. Press **`/`** there to filter live against a batch's
+title, its commands, and their server aliases all at once -- `Esc` clears the
+filter first, then closes the screen on a second press.
 
 Need it outside the TUI — for a compliance report, or just to grep offline?
 

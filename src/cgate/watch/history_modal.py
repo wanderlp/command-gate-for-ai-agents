@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, ClassVar
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import ListItem, ListView, Static
+from textual.widgets import Input, ListItem, ListView, Static
 from typing_extensions import override
 
 from cgate.watch.command_detail_modal import CommandDetailModal
@@ -46,7 +46,12 @@ class BatchHistoryRow(ListItem):
 
 
 class HistoryModal(ModalScreen[None]):
-    """Browse resolved batches: title/timestamp list on the left, commands on the right."""
+    """Browse resolved batches: title/timestamp list on the left, commands on the right.
+
+    Press `/` to filter (fzf/vim-style): the list narrows live against
+    every batch's title, description, and its commands' text/server alias.
+    Escape exits filter mode first, then closes the modal on a second press.
+    """
 
     CSS: ClassVar[str] = """
     HistoryModal { align: center middle; }
@@ -60,17 +65,23 @@ class HistoryModal(ModalScreen[None]):
     #history-hint { padding: 0 2 1 2; }
     #history-body { height: 1fr; }
     #history-list-pane { width: 40; border-right: solid $panel; padding: 1; }
+    #history-filter { margin-bottom: 1; }
     #history-detail-pane { padding: 1 2; }
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "close", "Close", priority=True),
-        Binding("q", "close", "Close", show=False, priority=True),
+        # Not priority: a focused #history-filter Input must still receive a
+        # literal "q" character while the human is typing a query.
+        Binding("q", "close", "Close", show=False),
+        Binding("slash", "search", "Filter", priority=True),
     ]
 
     _batches: BatchesRepo
     _commands: CommandsRepo
     _resolved: list[Batch]
+    _visible: list[Batch]
+    _search_text: dict[BatchId, str]
 
     def __init__(self, *, batches: BatchesRepo, commands: CommandsRepo) -> None:
         """Store the repositories used to list resolved batches and their commands."""
@@ -78,15 +89,18 @@ class HistoryModal(ModalScreen[None]):
         self._batches = batches
         self._commands = commands
         self._resolved = []
+        self._visible = []
+        self._search_text = {}
 
     @override
     def compose(self) -> ComposeResult:
-        """Lay out the title, the resolved-batch list, and the detail pane."""
+        """Lay out the title, the filter input, the resolved-batch list, and the detail pane."""
         with Vertical(id="history-dialog"):
             yield Static("[bold]History[/bold] [dim](most recently resolved first)[/dim]",
                           id="history-title")
             with Horizontal(id="history-body"):
                 with Vertical(id="history-list-pane"):
+                    yield Input(placeholder="/ to filter…", id="history-filter")
                     yield ListView(id="history-list")
                 with VerticalScroll(id="history-detail-pane"):
                     yield Static(id="history-detail-header")
@@ -94,13 +108,13 @@ class HistoryModal(ModalScreen[None]):
             yield Static(
                 (
                     "[dim]↑/↓ = browse batches — Enter on a command = view full result "
-                    "— Esc = close[/dim]"
+                    "— / = filter — Esc = close[/dim]"
                 ),
                 id="history-hint",
             )
 
     def on_mount(self) -> None:
-        """Load the resolved batches and show the most recent one's commands."""
+        """Load the resolved batches, index them for filtering, and show the newest."""
         try:
             self._resolved = self._batches.list_resolved(limit=_HISTORY_LIMIT)
         except sqlite3.Error as exc:
@@ -109,17 +123,66 @@ class HistoryModal(ModalScreen[None]):
                 f"[{error}]Could not read history:[/{error}] {exc}"
             )
             return
-        list_view = self.query_one("#history-list", ListView)
-        if not self._resolved:
-            self.query_one("#history-detail-header", Static).update(
-                "[dim]No resolved batches yet.[/dim]"
-            )
+        self._search_text = {batch.id: self._index_batch(batch) for batch in self._resolved}
+        self._visible = self._resolved
+        self._rebuild_list()
+        _ = self.query_one("#history-list", ListView).focus()
+
+    def _index_batch(self, batch: Batch) -> str:
+        """Build the lowercased blob `_apply_filter` matches a query against.
+
+        Best-effort: a DB hiccup while indexing one batch's commands just
+        means that batch won't match on its command/server text -- title
+        and description still will -- rather than breaking the whole list.
+        """
+        parts = [batch.title, batch.description or ""]
+        try:
+            for command in self._commands.list_for_batch(batch.id):
+                parts.append(command.command)
+                parts.append(command.server_alias)
+        except sqlite3.Error:
+            pass
+        return " ".join(parts).lower()
+
+    def action_search(self) -> None:
+        """Focus the filter input (`/`), fzf/vim-style."""
+        _ = self.query_one("#history-filter", Input).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Re-filter the batch list live as the query changes."""
+        if event.input.id != "history-filter":
             return
-        for batch in self._resolved:
+        self._apply_filter(event.value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Enter in the filter jumps focus to the (now-narrowed) results list."""
+        if event.input.id != "history-filter":
+            return
+        _ = self.query_one("#history-list", ListView).focus()
+
+    def _apply_filter(self, query: str) -> None:
+        """Narrow `_visible` to batches whose index contains `query`, then re-render."""
+        normalized = query.strip().lower()
+        self._visible = (
+            self._resolved
+            if not normalized
+            else [b for b in self._resolved if normalized in self._search_text.get(b.id, "")]
+        )
+        self._rebuild_list()
+
+    def _rebuild_list(self) -> None:
+        """Redraw #history-list from `_visible` and show the first match's detail."""
+        list_view = self.query_one("#history-list", ListView)
+        _ = list_view.clear()
+        for batch in self._visible:
             _ = list_view.append(BatchHistoryRow(batch))
-        list_view.index = 0
-        self._show_batch(self._resolved[0])
-        _ = list_view.focus()
+        if self._visible:
+            list_view.index = 0
+            self._show_batch(self._visible[0])
+            return
+        message = "No resolved batches yet." if not self._resolved else "No matches."
+        self.query_one("#history-detail-header", Static).update(f"[dim]{message}[/dim]")
+        _ = self.query_one("#history-rows", ListView).clear()
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         """Show the highlighted batch's commands as the sidebar cursor moves."""
@@ -167,7 +230,12 @@ class HistoryModal(ModalScreen[None]):
             rows.index = 0
 
     def action_close(self) -> None:
-        """Dismiss without writing anything -- this view is read-only."""
+        """Exit filter mode first if it's active; otherwise dismiss (read-only view)."""
+        filter_input = self.query_one("#history-filter", Input)
+        if self.focused is filter_input or filter_input.value:
+            filter_input.value = ""
+            _ = self.query_one("#history-list", ListView).focus()
+            return
         _ = self.dismiss(None)
 
 
