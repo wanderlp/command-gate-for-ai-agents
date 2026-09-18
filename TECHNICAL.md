@@ -53,6 +53,27 @@ as any properly-installed copy) rather than silently overwriting it — use
 `cgate install` subcommand still exists too, for scripting or re-running just the
 copy-and-PATH step on its own (it doesn't chain into MCP registration or pause).
 
+### Via PyPI (pip / pipx / uv)
+
+```bash
+pipx install command-gate   # or: uv tool install command-gate, or: pip install command-gate
+cgate mcp install           # registers with any AI client it finds
+```
+
+This is a plain Python package (`hatchling` wheel + sdist), published via GitHub
+OIDC trusted publishing on every tag push -- no API token stored anywhere. Two
+things work differently from the binary in the sections above:
+
+- No first-run bootstrap. `maybe_auto_install()` (`src/cgate/cli/install.py`) only
+  fires for a frozen PyInstaller binary that isn't at its install target yet --
+  `pipx`/`uv tool` already handle the install-and-PATH step, so run
+  `cgate mcp install` once yourself to register with Claude Code / opencode / Cursor.
+- `cgate update apply` doesn't work here. `current_binary_path()` returns `None`
+  for a non-frozen install, so the command prints a message and points you at the
+  latest release instead of trying to self-swap. Update with
+  `pipx upgrade command-gate` / `uv tool upgrade command-gate` / `pip install -U
+  command-gate` instead.
+
 ### Via package manager
 
 Manifest templates live under [`packaging/`](./packaging/README.md). Publishing
@@ -83,7 +104,10 @@ Winget is not yet supported — submit path requires PR to `microsoft/winget-pkg
   developer" → right-click the binary → **Open** → confirm. One-time per machine.
 
 Both are unsigned-binary friction, not bugs. Code signing is on the roadmap
-(see Phase 2).
+(see Phase 2). Installing via PyPI or a package manager instead of downloading
+the binary directly from a browser generally avoids both warnings, since the
+Windows "mark of the web" / macOS quarantine flag those checks key off of gets
+attached by the browser download itself, not by `pip`/`pipx`/`scoop`/`brew`.
 
 ## Typical workflow
 

@@ -129,6 +129,8 @@ and only invoke `propose_command` when it knows what will happen.
 
 ## Get started
 
+**Option A — download the binary** (no Python required):
+
 1. Download the binary for your platform from the
    [latest release](https://github.com/wanderlp/command-gate-for-ai-agents/releases/latest).
 2. Run it (double-click it, or just `.\cgate-windows-amd64.exe` from the folder you
@@ -137,12 +139,25 @@ and only invoke `propose_command` when it knows what will happen.
    no admin/sudo, no flags to remember.
 3. Open a new terminal and restart your AI client. Done.
 
+**Option B — install from PyPI** (if you already have Python 3.11+):
+
+```bash
+pipx install command-gate   # or: uv tool install command-gate
+cgate mcp install           # registers with Claude Code / opencode / Cursor
+```
+
+There's no first-run bootstrap on this path — `pipx`/`uv tool` already put `cgate`
+on your `PATH`, so `cgate mcp install` is the one extra step. Update later with
+`pipx upgrade command-gate` (`cgate update apply` only knows how to replace the
+binary from Option A).
+
 From there, `cgate watch` opens a live approval queue: agent proposals show up as they
 come in, you approve or reject with a keypress, and the result streams back to the
 agent.
 
-> First run on Windows or macOS may show a one-time "unrecognized publisher" warning —
-> these binaries aren't code-signed yet. See
+> The binary in Option A may show a one-time "unrecognized publisher" warning on
+> Windows or macOS — it isn't code-signed yet. Installing via PyPI (Option B) skips
+> this, since it isn't a browser download. See
 > [TECHNICAL.md](./TECHNICAL.md#first-run-warnings-binaries-are-not-code-signed) for
 > what to do about it.
 
