@@ -49,9 +49,13 @@ unattended: the global mode is AUTO *and* that specific server is opted in.
 │                    stage-2 LNX [ ]                          │
 │                    prod-db WIN [ ]                          │
 ├─────────────────────────────────────────────────────────────┤
-│ [y]approve [n]reject [a]approve batch [m]ode [s]ervers ...  │
+│ [y]approve [n]reject [a]approve batch [m]ode [h]istory ...  │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+↑/↓ + Enter on the queue sidebar jumps straight to any pending batch — you're not
+forced to clear the queue in strict arrival order to get to the one you actually
+want to approve next.
 
 ### Switching modes
 
@@ -70,15 +74,17 @@ suspenders, default-safe at every level.
 
 ### The audit trail still works
 
-Auto-approved commands land in the same database with `approved_by` set to
-`auto:watch:<your-username>`, so you can filter the log:
+Every command a batch ever queued shows an `⚙ auto` or `👤 <username>` badge next
+to it, so you always know whether a human or AUTO mode approved it — and once a
+batch resolves, it doesn't vanish: press **`h`** in `cgate watch` to browse every
+resolved batch, see the agent's stated `reason` for wanting the command, and view
+the full, untruncated result.
+
+Prefer SQL? The same data is still just a query away:
 
 ```sql
 SELECT * FROM commands WHERE approved_by LIKE 'auto:%';
 ```
-
-You'll see exactly what your AI ran while you weren't looking, who it claimed to
-be, when, and on which server.
 
 ### What the AI sees (and what it can ask first)
 

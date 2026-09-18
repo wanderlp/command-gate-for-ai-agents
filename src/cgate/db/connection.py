@@ -67,6 +67,19 @@ def connect(database: Database) -> Generator[sqlite3.Connection, None, None]:
         conn.close()
 
 
+def _ensure_commands_reason_column(conn: sqlite3.Connection) -> None:
+    """Add ``commands.reason`` for databases created before it existed.
+
+    Unlike the ``CREATE TABLE IF NOT EXISTS`` statements everywhere else
+    in this file, SQLite's ``ALTER TABLE ... ADD COLUMN`` has no
+    ``IF NOT EXISTS`` form, so idempotency has to be a live
+    ``PRAGMA table_info`` check instead of a fixed SQL string.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(commands)")}
+    if "reason" not in columns:
+        _ = conn.execute("ALTER TABLE commands ADD COLUMN reason TEXT")
+
+
 def init_database(database: Database) -> None:
     """Create parent dirs (if needed) and apply the schema; idempotent.
 
@@ -81,6 +94,7 @@ def init_database(database: Database) -> None:
     with connect(database) as conn:
         _ = conn.executescript(SCHEMA_SQL)
         _ = conn.executescript(_MODE_SETTINGS_SQL)
+        _ensure_commands_reason_column(conn)
         applied_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         _ = conn.execute(
             "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, ?)",

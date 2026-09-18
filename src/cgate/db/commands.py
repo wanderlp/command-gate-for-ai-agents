@@ -44,6 +44,7 @@ class CommandsRepo:
         server_alias: str,
         server_type: ServerType,
         command: str,
+        reason: str | None = None,
     ) -> Command:
         """Append a command to the end of a batch (position = max + 1, or 0 if empty).
 
@@ -63,8 +64,8 @@ class CommandsRepo:
                 """
                 INSERT INTO commands
                     (id, batch_id, position, server_alias, server_type,
-                     command, status, created_at)
-                SELECT ?, ?, COALESCE(MAX(position), -1) + 1, ?, ?, ?, ?, ?
+                     command, status, created_at, reason)
+                SELECT ?, ?, COALESCE(MAX(position), -1) + 1, ?, ?, ?, ?, ?, ?
                 FROM commands WHERE batch_id = ?
                 """,
                 (
@@ -75,6 +76,7 @@ class CommandsRepo:
                     command,
                     CommandStatus.PENDING.value,
                     iso(now),
+                    reason,
                     batch_id,
                 ),
             )
@@ -97,6 +99,7 @@ class CommandsRepo:
             approved_by=None,
             created_at=now,
             resolved_at=None,
+            reason=reason,
         )
 
     def get(self, command_id: CommandId) -> Command | None:
@@ -105,7 +108,7 @@ class CommandsRepo:
             row = conn.execute(
                 """
                 SELECT id, batch_id, position, server_alias, server_type,
-                    command, status, result, approved_by, created_at, resolved_at
+                    command, status, result, approved_by, created_at, resolved_at, reason
                 FROM commands WHERE id = ?
                 """,
                 (command_id,),
@@ -118,7 +121,7 @@ class CommandsRepo:
             rows = conn.execute(
                 """
                 SELECT id, batch_id, position, server_alias, server_type,
-                    command, status, result, approved_by, created_at, resolved_at
+                    command, status, result, approved_by, created_at, resolved_at, reason
                 FROM commands WHERE batch_id = ?
                 ORDER BY position ASC
                 """,
@@ -132,7 +135,7 @@ class CommandsRepo:
             rows = conn.execute(
                 """
                 SELECT id, batch_id, position, server_alias, server_type,
-                    command, status, result, approved_by, created_at, resolved_at
+                    command, status, result, approved_by, created_at, resolved_at, reason
                 FROM commands WHERE status = ?
                 """,
                 (status.value,),

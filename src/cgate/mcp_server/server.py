@@ -112,7 +112,10 @@ def _tools() -> list[types.Tool]:
                     },
                     "reason": {
                         "type": "string",
-                        "description": "Optional Phase 1 justification; accepted but not stored.",
+                        "description": (
+                            "Optional justification for why this command is needed. "
+                            "Stored and shown to the human reviewer in cgate watch."
+                        ),
                     },
                 },
                 "required": ["server_alias", "command", "batch_title"],

@@ -97,7 +97,10 @@ Both are unsigned-binary friction, not bugs. Code signing is on the roadmap
 $ cgate watch
 # Sidebar shows the FIFO batch queue; the main panel shows the active
 # batch's commands. y=approve  n=reject  a=approve rest  r=reject rest
-# m=toggle mode  s=server settings  q=quit.
+# m=toggle mode  s=server settings  h=history  q=quit.
+# ↑/↓ + Enter on the sidebar jumps the queue to a specific batch instead
+# of being forced through strict FIFO order. Enter on a command opens its
+# full, untruncated result -- the queue rows cap it to one line.
 # Stays open and keeps polling for new batches even when the queue drains.
 
 # 3. Stay current.
@@ -221,8 +224,9 @@ src/cgate/
 ├── helper/       # Standalone cgate-helper.exe: Windows-only file swap for self-update
 ├── mcp_server/   # MCP server exposing propose_command / list_connections / check_status
 │                 # + auto_resolution.py (mode-aware decision helper)
-└── watch/        # Interactive approval queue (y/n/a/r/m/s controls)
+└── watch/        # Interactive approval queue (y/n/a/r/m/s/h controls)
                   # + mode_modal.py + server_settings_modal.py
+                  # + history_modal.py + command_detail_modal.py + widgets.py
 ```
 
 Release assets are produced by `.github/workflows/release.yml` on every tag push

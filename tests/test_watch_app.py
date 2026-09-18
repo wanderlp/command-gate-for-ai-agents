@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
+from textual.widgets import ListView
 
 from cgate.connections.store import ConnectionsRepo
 from cgate.db.batches import BatchesRepo
@@ -19,6 +20,7 @@ from cgate.db.server_settings import ServerSettingsRepo
 from cgate.db.types import CommandStatus, ServerType
 from cgate.executor.base import ExecutionResult
 from cgate.watch.app import ActivePanel, WatchApp
+from cgate.watch.command_detail_modal import CommandDetailModal
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -126,6 +128,118 @@ def test_reject_all_resolves_the_active_batch(repos: Repos) -> None:
     resolved = repos.batches.get(lot.id)
     assert resolved is not None
     assert resolved.resolved_at is not None
+
+
+def test_selecting_a_batch_in_the_sidebar_pins_it_active(repos: Repos) -> None:
+    """A human can jump the queue and prioritize approving a batch further
+    down instead of being forced through strict FIFO order."""
+    older = repos.batches.create(title="older", description=None, requested_by_agent=None)
+    _ = repos.commands.add(
+        batch_id=older.id, server_alias="linux-1", server_type=ServerType.LINUX, command="a"
+    )
+    newer = repos.batches.create(title="newer", description=None, requested_by_agent=None)
+    _ = repos.commands.add(
+        batch_id=newer.id, server_alias="linux-1", server_type=ServerType.LINUX, command="b"
+    )
+
+    async def scenario() -> tuple[str, object]:
+        async with _app(repos).run_test() as pilot:
+            await pilot.pause()
+            pilot.app.query_one("#queue-list", ListView).focus()
+            await pilot.pause()
+            await pilot.press("down")  # highlight the second (newer) batch
+            await pilot.press("enter")  # pin it as active
+            await pilot.pause()
+            header = str(pilot.app.query_one("#active-header").content)
+            return header, pilot.app._pinned_batch_id  # noqa: SLF001
+
+    header, pinned_id = asyncio.run(scenario())
+    assert "newer" in header
+    assert pinned_id == newer.id
+
+
+def test_approve_after_pinning_acts_on_the_pinned_batch_not_fifo_first(repos: Repos) -> None:
+    older = repos.batches.create(title="older", description=None, requested_by_agent=None)
+    _ = repos.commands.add(
+        batch_id=older.id, server_alias="linux-1", server_type=ServerType.LINUX, command="a"
+    )
+    newer = repos.batches.create(title="newer", description=None, requested_by_agent=None)
+    newer_cmd = repos.commands.add(
+        batch_id=newer.id, server_alias="linux-1", server_type=ServerType.LINUX, command="b"
+    )
+    _ = repos.connections.add(
+        alias="linux-1",
+        hostname="linux.example",
+        server_type=ServerType.LINUX,
+        detection_ssh=True,
+        detection_winrm=False,
+    )
+
+    async def scenario() -> None:
+        with patch("cgate.watch.approval.execute_command", return_value=_success()):
+            async with _app(repos).run_test() as pilot:
+                await pilot.pause()
+                pilot.app.query_one("#queue-list", ListView).focus()
+                await pilot.pause()
+                await pilot.press("down")
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.press("y")
+                await pilot.pause()
+
+    asyncio.run(scenario())
+
+    updated_newer = repos.commands.get(newer_cmd.id)
+    assert updated_newer is not None
+    assert updated_newer.status is CommandStatus.EXECUTED
+    older_cmd = repos.commands.list_for_batch(older.id)[0]
+    assert older_cmd.status is CommandStatus.PENDING
+
+
+def test_pinned_batch_falls_back_to_fifo_once_it_resolves(repos: Repos) -> None:
+    """Self-correcting: no explicit unpin needed once the chosen batch is done."""
+    lot = repos.batches.create(title="lot", description=None, requested_by_agent=None)
+    _ = repos.commands.add(
+        batch_id=lot.id, server_alias="linux-1", server_type=ServerType.LINUX, command="a"
+    )
+
+    async def scenario() -> None:
+        async with _app(repos).run_test() as pilot:
+            await pilot.pause()
+            pilot.app.query_one("#queue-list", ListView).focus()
+            await pilot.pause()
+            await pilot.press("enter")  # pin the only batch (itself)
+            await pilot.press("n")  # reject its only command -> the batch resolves
+            await pilot.pause()
+
+    asyncio.run(scenario())
+
+    resolved = repos.batches.get(lot.id)
+    assert resolved is not None
+    assert resolved.resolved_at is not None
+
+
+def test_entering_a_command_row_opens_the_detail_modal(repos: Repos) -> None:
+    lot = repos.batches.create(title="lot", description=None, requested_by_agent=None)
+    _ = repos.commands.add(
+        batch_id=lot.id,
+        server_alias="linux-1",
+        server_type=ServerType.LINUX,
+        command="uptime",
+        reason="checking uptime after patching",
+    )
+
+    async def scenario() -> bool:
+        async with _app(repos).run_test() as pilot:
+            await pilot.pause()
+            pilot.app.query_one("#rows", ListView).focus()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            return isinstance(pilot.app.screen, CommandDetailModal)
+
+    opened = asyncio.run(scenario())
+    assert opened
 
 
 def test_refresh_renders_clean_message_on_sqlite_error(repos: Repos) -> None:

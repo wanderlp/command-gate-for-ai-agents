@@ -71,6 +71,26 @@ class BatchesRepo:
             ).fetchall()
         return [row_to_batch(r) for r in rows]
 
+    def list_resolved(self, *, limit: int = 50) -> list[Batch]:
+        """Return resolved batches, most recently resolved first.
+
+        The live queue drops a batch the instant it resolves (`list_pending`
+        filters it out), so this is the only way to look back at anything
+        that already went through -- approved, rejected, or auto-executed.
+        """
+        with connect(self._db) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, title, description, requested_by_agent, created_at, resolved_at
+                FROM batches
+                WHERE resolved_at IS NOT NULL
+                ORDER BY resolved_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [row_to_batch(r) for r in rows]
+
     def mark_resolved(
         self, batch_id: BatchId, *, resolved_at: datetime | None = None
     ) -> None:

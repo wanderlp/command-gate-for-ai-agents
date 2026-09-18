@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -15,12 +16,14 @@ from cgate.executor.base import ErrorKind, ExecutionResult
 from cgate.watch.approval import approve_one, approve_remaining, reject_one, reject_remaining
 from cgate.watch.queue import (
     active_batch,
+    count_pending_commands,
     count_waiting,
     fail_orphaned_approvals,
     heal_queue,
     is_batch_resolved,
     pending_commands_in_batch,
     resolve_stale_batches,
+    select_active_batch,
 )
 from cgate.watch.session import run_watch_session
 
@@ -56,6 +59,18 @@ def _batch(repos: Repos, title: str = "lot") -> Batch:
         title=title,
         description="description",
         requested_by_agent="test-agent",
+    )
+
+
+def _batch_value(batch_id: str, title: str) -> Batch:
+    """A plain Batch value, unpersisted -- for pure functions that only read fields."""
+    return Batch(
+        id=BatchId(batch_id),
+        title=title,
+        description=None,
+        requested_by_agent=None,
+        created_at=datetime.now(UTC),
+        resolved_at=None,
     )
 
 
@@ -112,6 +127,57 @@ def test_active_batch_returns_oldest_pending(repos: Repos) -> None:
 
 def test_active_batch_returns_none_when_no_pending(repos: Repos) -> None:
     assert active_batch(repos.batches) is None
+
+
+def test_select_active_batch_returns_fifo_oldest_when_nothing_pinned() -> None:
+    older = _batch_value("b1", "first")
+    newer = _batch_value("b2", "second")
+
+    assert select_active_batch([older, newer], None) is older
+
+
+def test_select_active_batch_returns_pinned_batch_even_if_not_oldest() -> None:
+    """A human can jump the queue and prioritize a batch further down --
+    the whole point of adding batch selection to cgate watch."""
+    older = _batch_value("b1", "first")
+    newer = _batch_value("b2", "second")
+
+    assert select_active_batch([older, newer], BatchId("b2")) is newer
+
+
+def test_select_active_batch_falls_back_to_fifo_once_pinned_batch_resolves() -> None:
+    """Self-correcting: once the pinned batch is no longer in `pending`
+    (it resolved), this must not get stuck returning None forever."""
+    remaining = _batch_value("b2", "second")
+
+    assert select_active_batch([remaining], BatchId("b1")) is remaining
+
+
+def test_select_active_batch_returns_none_when_queue_is_empty() -> None:
+    assert select_active_batch([], None) is None
+
+
+def test_count_pending_commands_sums_across_every_pending_batch(repos: Repos) -> None:
+    first_lot = _batch(repos, "first")
+    second_lot = _batch(repos, "second")
+    commands_in_first_lot = 2
+    for _ in range(commands_in_first_lot):
+        _command(repos, batch_id=first_lot.id)
+    _command(repos, batch_id=second_lot.id)
+    expected_total = commands_in_first_lot + 1
+
+    total = count_pending_commands([first_lot, second_lot], repos.commands)
+
+    assert total == expected_total
+
+
+def test_count_pending_commands_excludes_terminal_commands(repos: Repos) -> None:
+    lot = _batch(repos)
+    terminal = _command(repos, batch_id=lot.id)
+    _ = _command(repos, batch_id=lot.id)
+    repos.commands.update_status(terminal.id, status=CommandStatus.REJECTED)
+
+    assert count_pending_commands([lot], repos.commands) == 1
 
 
 def test_count_waiting_returns_zero_when_no_lots(repos: Repos) -> None:

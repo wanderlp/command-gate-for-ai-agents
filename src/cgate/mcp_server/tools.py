@@ -32,6 +32,7 @@ class ProposeCommandResult(TypedDict):
     effective_reason: NotRequired[str | None]
     result: NotRequired[str | None]
     approved_by: NotRequired[str | None]
+    reason: NotRequired[str | None]
 
 
 class ConnectionResult(TypedDict):
@@ -65,6 +66,7 @@ class CommandStatusResult(TypedDict):
     approved_by: str | None
     created_at: str
     resolved_at: str | None
+    reason: str | None
 
 
 class BatchStatusResult(TypedDict):
@@ -122,7 +124,7 @@ def _auto_approve_by() -> str:
         return "auto:mcp"
 
 
-def _execute_auto(  # noqa: PLR0913 - signature follows the required repository DI boundary
+def _execute_auto(
     *,
     batches_repo: BatchesRepo,
     commands_repo: CommandsRepo,
@@ -157,6 +159,7 @@ def _execute_auto(  # noqa: PLR0913 - signature follows the required repository 
             "effective_reason": decision["reason"],
             "result": current.result if current is not None else None,
             "approved_by": current.approved_by if current is not None else None,
+            "reason": queued.reason,
         }
     execution = selector.execute_command(connection, queued.command)
     status = CommandStatus.EXECUTED if execution.ok else CommandStatus.FAILED
@@ -186,6 +189,7 @@ def _execute_auto(  # noqa: PLR0913 - signature follows the required repository 
         "effective_reason": decision["reason"],
         "result": output,
         "approved_by": approver,
+        "reason": queued.reason,
     }
 
 
@@ -211,7 +215,6 @@ def propose_command(  # noqa: PLR0913 - boundary mirrors the specified MCP tool 
     """
     title = _require_batch_title(batch_title)
     connection = _require_known_alias(connections_repo, server_alias)
-    _ = reason  # Phase 1 accepts the justification but has no persistence column for it.
 
     if batch_id is None:
         batch = batches_repo.create(
@@ -234,6 +237,7 @@ def propose_command(  # noqa: PLR0913 - boundary mirrors the specified MCP tool 
         server_alias=connection.alias,
         server_type=connection.server_type,
         command=command,
+        reason=reason,
     )
     decision = resolve_auto_behavior(
         mode_repo=mode_repo,
@@ -258,6 +262,7 @@ def propose_command(  # noqa: PLR0913 - boundary mirrors the specified MCP tool 
         "effective_reason": decision["reason"],
         "result": None,
         "approved_by": None,
+        "reason": queued.reason,
     }
 
 
@@ -329,6 +334,7 @@ def check_status(
                 "approved_by": command.approved_by,
                 "created_at": command.created_at.isoformat(),
                 "resolved_at": command.resolved_at.isoformat() if command.resolved_at else None,
+                "reason": command.reason,
             }
             for command in commands_repo.list_for_batch(typed_batch_id)
         ],

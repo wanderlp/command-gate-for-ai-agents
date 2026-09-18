@@ -11,9 +11,10 @@ import asyncio
 import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
+from rich.markup import escape as escape_markup
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, ListItem, ListView, Static
 from typing_extensions import override
 
@@ -24,15 +25,18 @@ from cgate.watch.approval import (
     approve_one,
     reject_one,
 )
+from cgate.watch.command_detail_modal import CommandDetailModal
+from cgate.watch.history_modal import HistoryModal
 from cgate.watch.mode_modal import ModeModal, mode_markup
-from cgate.watch.queue import count_waiting, pending_commands_in_batch
-from cgate.watch.render import (
-    format_batch_header,
-    format_command_line,
-    format_waiting_notice,
-    server_badge,
+from cgate.watch.queue import (
+    count_pending_commands,
+    count_waiting,
+    pending_commands_in_batch,
+    select_active_batch,
 )
+from cgate.watch.render import format_batch_header, format_queue_summary, server_badge
 from cgate.watch.server_settings_modal import ServerSettingsModal
+from cgate.watch.widgets import CommandRow
 
 if TYPE_CHECKING:
     from textual.binding import BindingType
@@ -48,25 +52,55 @@ if TYPE_CHECKING:
 _POLL_INTERVAL_SECONDS: float = 1.5
 
 
+class BatchRow(ListItem):
+    """One pending batch in the queue sidebar, carrying its id for selection."""
+
+    batch_id: BatchId
+
+    def __init__(self, batch: Batch, *, active: bool) -> None:
+        """Render the marker/title and remember which batch this row is."""
+        marker = "▶" if active else " "
+        style = "bold cyan" if active else "dim"
+        super().__init__(
+            Static(f"{marker} [{style}]{escape_markup(batch.title)}[/{style}]", markup=True)
+        )
+        self.batch_id = batch.id
+
+
 class QueueSidebar(Vertical):
-    """Left rail listing pending batches, FIFO order, active one marked."""
+    """Left rail listing pending batches, FIFO order, active one marked.
+
+    Enter on a highlighted row pins that batch as active regardless of
+    FIFO order (`WatchApp.on_list_view_selected`), so a human can jump
+    the queue and prioritize approving something further down.
+    """
 
     @override
     def compose(self) -> ComposeResult:
-        """Build the static title and the batch list view."""
+        """Build the static title, a usage hint, and the batch list view."""
         yield Static("[bold]Queue[/bold]", classes="sidebar-title")
+        yield Static("[dim]↑/↓ Enter = jump to a batch[/dim]", classes="sidebar-hint")
         yield ListView(id="queue-list")
 
     def refresh_queue(self, pending: list[Batch], active_id: BatchId | None) -> None:
-        """Replace the list view contents with the current pending batches."""
+        """Rebuild the list view, keeping the same row highlighted if it still exists.
+
+        Runs on every poll tick (every `_POLL_INTERVAL_SECONDS`), not just
+        on user action, so it must not reset a human's cursor mid-navigation
+        -- restoring the highlighted batch by id (falling back to the first
+        row) keeps ↑/↓ usable even while the queue is refreshing live.
+        """
         list_view = self.query_one("#queue-list", ListView)
+        highlighted = list_view.highlighted_child
+        highlighted_id = highlighted.batch_id if isinstance(highlighted, BatchRow) else None
         _ = list_view.clear()
         for batch in pending:
-            marker = "▶" if batch.id == active_id else " "
-            style = "bold cyan" if batch.id == active_id else "dim"
-            _ = list_view.append(
-                ListItem(Static(f"{marker} [{style}]{batch.title}[/{style}]", markup=True))
+            _ = list_view.append(BatchRow(batch, active=batch.id == active_id))
+        if pending:
+            restore_index = next(
+                (i for i, batch in enumerate(pending) if batch.id == highlighted_id), 0
             )
+            list_view.index = restore_index
 
 
 class ModeHeader(Horizontal):
@@ -107,31 +141,22 @@ class ServersSidebar(Vertical):
             )
 
 
-class CommandRow(Static):
-    """One command line inside the active-batch panel, updatable in place."""
+class ActivePanel(Vertical):
+    """Main pane: the active batch's header and its command rows.
 
-    command_id: CommandId
-
-    def __init__(self, command: Command) -> None:
-        """Render the initial line for this command and remember its id."""
-        super().__init__(format_command_line(command), markup=True)
-        self.command_id = command.id
-
-    def update_command(self, command: Command) -> None:
-        """Refresh this row's text for the command's current state."""
-        _ = self.update(format_command_line(command))
-
-
-class ActivePanel(VerticalScroll):
-    """Main pane: the active batch's header and its command rows."""
+    Enter on a highlighted command row opens its full-detail modal
+    (`WatchApp.on_list_view_selected`) -- the untruncated result, the
+    agent's `reason`, and who/what approved it.
+    """
 
     _shown_batch_id: BatchId | None = None
 
     @override
     def compose(self) -> ComposeResult:
-        """Build the header static and the row container."""
+        """Build the header static, a usage hint, and the row list view."""
         yield Static(id="active-header")
-        yield Vertical(id="rows")
+        yield Static("[dim]Enter on a command = view full result[/dim]", classes="sidebar-hint")
+        yield ListView(id="rows")
 
     def show_idle(self) -> None:
         """Show the empty-queue placeholder and drop any stale rows."""
@@ -139,17 +164,19 @@ class ActivePanel(VerticalScroll):
         _ = self.query_one("#active-header", Static).update(
             "[dim]No pending batches — waiting for new proposals…[/dim]"
         )
-        _ = self.query_one("#rows", Vertical).remove_children()
+        _ = self.query_one("#rows", ListView).clear()
 
     def show_batch(self, batch: Batch, commands_in_batch: list[Command]) -> None:
         """Render one batch's header, updating existing rows in place when possible."""
         _ = self.query_one("#active-header", Static).update(format_batch_header(batch))
-        rows = self.query_one("#rows", Vertical)
+        rows = self.query_one("#rows", ListView)
         if batch.id != self._shown_batch_id:
             self._shown_batch_id = batch.id
-            _ = rows.remove_children()
+            _ = rows.clear()
             for command in commands_in_batch:
-                _ = rows.mount(CommandRow(command))
+                _ = rows.append(ListItem(CommandRow(command)))
+            if commands_in_batch:
+                rows.index = 0
             return
         existing = {row.command_id: row for row in rows.query(CommandRow)}
         for command in commands_in_batch:
@@ -157,11 +184,11 @@ class ActivePanel(VerticalScroll):
             if row is not None:
                 row.update_command(command)
             else:
-                _ = rows.mount(CommandRow(command))
+                _ = rows.append(ListItem(CommandRow(command)))
 
 
 class WatchApp(App[None]):
-    """Approval dashboard: sidebar queue + active-batch panel, keys y/n/a/r/q."""
+    """Approval dashboard: sidebar queue + active-batch panel, keys y/n/a/r/h/q."""
 
     CSS: ClassVar[str] = """
     Screen { background: $surface; }
@@ -173,8 +200,10 @@ class WatchApp(App[None]):
     QueueSidebar { padding: 1; height: 1fr; }
     ServersSidebar { padding: 1; height: auto; max-height: 45%; border-top: solid $panel; }
     .sidebar-title { margin-bottom: 1; }
+    .sidebar-hint { margin-bottom: 1; }
     ActivePanel { padding: 1 2; }
     #active-header { margin-bottom: 1; }
+    #rows { height: 1fr; }
     CommandRow { margin-bottom: 1; }
     #waiting-notice { padding: 0 2; }
     """
@@ -186,6 +215,7 @@ class WatchApp(App[None]):
         Binding("r", "reject_all", "Reject all"),
         Binding("m", "toggle_mode", "Mode"),
         Binding("s", "server_settings", "Servers"),
+        Binding("h", "history", "History"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -196,6 +226,7 @@ class WatchApp(App[None]):
     _mode: AppModeRepo  # class-level annotation required by strict mode
     _server_settings: ServerSettingsRepo  # class-level annotation required by strict mode
     _busy: bool
+    _pinned_batch_id: BatchId | None
 
     def __init__(  # noqa: PLR0913 - signature follows the required repository DI boundary
         self,
@@ -216,6 +247,7 @@ class WatchApp(App[None]):
         self._mode = mode
         self._server_settings = server_settings
         self._busy = False
+        self._pinned_batch_id = None
 
     @override
     def compose(self) -> ComposeResult:
@@ -262,9 +294,11 @@ class WatchApp(App[None]):
         will retry the read automatically.
         """
         self._render_notice(
-            f"[red]Could not read the database:[/red] {exc}\n"
-            "[dim]Check that no other cgate process is locking "
-            "cgate.db. The next read will retry automatically.[/dim]",
+            (
+                f"[red]Could not read the database:[/red] {exc}\n"
+                "[dim]Check that no other cgate process is locking "
+                "cgate.db. The next read will retry automatically.[/dim]"
+            ),
             "database error",
         )
 
@@ -305,10 +339,16 @@ class WatchApp(App[None]):
         try:
             self._refresh_mode_and_servers()
             pending = self._batches.list_pending()
-            active = pending[0] if pending else None
+            active = select_active_batch(pending, self._pinned_batch_id)
             self.query_one(QueueSidebar).refresh_queue(pending, active.id if active else None)
+            pending_total = count_pending_commands(pending, self._commands)
             notice = self.query_one("#waiting-notice", Static)
-            _ = notice.update(format_waiting_notice(count_waiting(self._batches)))
+            _ = notice.update(
+                format_queue_summary(
+                    pending_commands=pending_total,
+                    waiting_batches=count_waiting(self._batches),
+                )
+            )
             panel = self.query_one(ActivePanel)
             if active is None:
                 panel.show_idle()
@@ -326,20 +366,44 @@ class WatchApp(App[None]):
     def _first_pending(self) -> Command | None:
         """Return the active batch's next pending command, or None.
 
+        "Active" honors a pinned batch (`select_active_batch`) the same
+        way `_refresh` does, so y/n/a/r act on whatever the human picked
+        in the queue sidebar rather than always the FIFO-oldest one.
+
         Returns ``None`` on a DB error too -- action handlers already
         treat ``None`` as "no-op", so the user's keypress becomes a
         silent skip while the error message stays on screen.
         """
         try:
             pending = self._batches.list_pending()
-            if not pending:
+            active = select_active_batch(pending, self._pinned_batch_id)
+            if active is None:
                 return None
-            commands_in_batch = self._commands.list_for_batch(pending[0].id)
+            commands_in_batch = self._commands.list_for_batch(active.id)
             remaining = pending_commands_in_batch(commands_in_batch)
             return remaining[0] if remaining else None
         except sqlite3.Error as exc:
             self._render_db_error(exc)
             return None
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Pin a batch chosen in the queue sidebar, or open a command's full detail."""
+        if event.list_view.id == "queue-list" and isinstance(event.item, BatchRow):
+            self._pinned_batch_id = event.item.batch_id
+            self._refresh()
+        elif event.list_view.id == "rows":
+            row = event.item.query_one(CommandRow)
+            self._show_command_detail(row.command_id)
+
+    def _show_command_detail(self, command_id: CommandId) -> None:
+        """Open the full-detail modal for one command; best-effort on a DB error."""
+        try:
+            command = self._commands.get(command_id)
+        except sqlite3.Error as exc:
+            self._render_db_error(exc)
+            return
+        if command is not None:
+            _ = self.push_screen(CommandDetailModal(command))
 
     async def action_approve_one(self) -> None:
         """Approve and execute the active batch's next pending command."""
@@ -411,6 +475,10 @@ class WatchApp(App[None]):
             ),
             _after,
         )
+
+    def action_history(self) -> None:
+        """Open the read-only browser for resolved batches."""
+        _ = self.push_screen(HistoryModal(batches=self._batches, commands=self._commands))
 
     async def _approve(self, command_id: CommandId) -> None:
         """Run one approval off the event loop thread, then refresh the view."""

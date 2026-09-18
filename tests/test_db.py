@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -137,6 +138,73 @@ def test_mark_resolved_is_idempotent(tmp_path: Path) -> None:
     fetched = repo.get(a.id)
     assert fetched is not None
     assert fetched.resolved_at is not None
+
+
+def test_list_resolved_returns_only_resolved_most_recent_first(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    repo = BatchesRepo(db)
+    older = repo.create(title="older", description=None, requested_by_agent=None)
+    newer = repo.create(title="newer", description=None, requested_by_agent=None)
+    still_open = repo.create(title="open", description=None, requested_by_agent=None)
+    repo.mark_resolved(older.id, resolved_at=datetime(2025, 1, 1, tzinfo=UTC))
+    repo.mark_resolved(newer.id, resolved_at=datetime(2025, 1, 2, tzinfo=UTC))
+
+    resolved = repo.list_resolved()
+
+    assert [b.id for b in resolved] == [newer.id, older.id]
+    assert still_open.id not in [b.id for b in resolved]
+
+
+def test_list_resolved_respects_limit(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    repo = BatchesRepo(db)
+    total_batches = 5
+    query_limit = 2
+    for i in range(total_batches):
+        batch = repo.create(title=f"b{i}", description=None, requested_by_agent=None)
+        repo.mark_resolved(batch.id, resolved_at=datetime(2025, 1, 1 + i, tzinfo=UTC))
+
+    assert len(repo.list_resolved(limit=query_limit)) == query_limit
+
+
+def test_list_resolved_empty_when_nothing_resolved_yet(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    repo = BatchesRepo(db)
+    repo.create(title="open", description=None, requested_by_agent=None)
+
+    assert repo.list_resolved() == []
+
+
+def test_add_command_persists_reason(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    batches = BatchesRepo(db)
+    commands = CommandsRepo(db)
+    batch = batches.create(title="b", description=None, requested_by_agent=None)
+    cmd = commands.add(
+        batch_id=batch.id,
+        server_alias="srv-1",
+        server_type=ServerType.LINUX,
+        command="uptime",
+        reason="checking for a memory leak",
+    )
+    assert cmd.reason == "checking for a memory leak"
+    fetched = commands.get(cmd.id)
+    assert fetched is not None
+    assert fetched.reason == "checking for a memory leak"
+
+
+def test_add_command_reason_defaults_to_none(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    batches = BatchesRepo(db)
+    commands = CommandsRepo(db)
+    batch = batches.create(title="b", description=None, requested_by_agent=None)
+    cmd = commands.add(
+        batch_id=batch.id,
+        server_alias="srv-1",
+        server_type=ServerType.LINUX,
+        command="uptime",
+    )
+    assert cmd.reason is None
 
 
 def test_add_command_auto_increments_position_from_zero(tmp_path: Path) -> None:

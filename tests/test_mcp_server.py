@@ -64,6 +64,7 @@ def _propose(db: Database, **overrides: str | None) -> ProposeCommandResult:
         "command": "Get-Service",
         "batch_title": "diagnostics",
         "batch_description": None,
+        "reason": None,
         **overrides,
     }
     return propose_command(
@@ -77,6 +78,7 @@ def _propose(db: Database, **overrides: str | None) -> ProposeCommandResult:
         batch_title=values["batch_title"],
         batch_description=values["batch_description"],
         batch_id=values.get("batch_id"),
+        reason=values["reason"],
     )
 
 
@@ -139,6 +141,38 @@ def test_propose_command_never_executes(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(cgate.executor.selector, "execute_command", fail_if_called)
     result = _propose(db)
     assert result["status"] == "pending"
+
+
+def test_propose_command_persists_reason(tmp_path: Path) -> None:
+    """Regression: `reason` used to be accepted and immediately discarded --
+    the human reviewing in `cgate watch` never saw why the agent wanted to
+    run the command at all."""
+    db = _db(tmp_path)
+    _add_connection(db)
+    result = _propose(db, reason="disk is at 95%, need to check what's eating it")
+    assert result.get("reason") == "disk is at 95%, need to check what's eating it"
+    batch_id = BatchId(str(result["batch_id"]))
+    stored = CommandsRepo(db).list_for_batch(batch_id)
+    assert stored[0].reason == "disk is at 95%, need to check what's eating it"
+
+
+def test_propose_command_reason_defaults_to_none(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    _add_connection(db)
+    result = _propose(db)
+    assert result.get("reason") is None
+
+
+def test_check_status_includes_reason_for_each_command(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    _add_connection(db)
+    result = _propose(db, reason="scheduled maintenance window")
+    status = check_status(
+        batches_repo=BatchesRepo(db),
+        commands_repo=CommandsRepo(db),
+        batch_id=str(result["batch_id"]),
+    )
+    assert status["commands"][0]["reason"] == "scheduled maintenance window"
 
 
 def test_propose_command_queues_in_propose_mode(tmp_path: Path) -> None:
