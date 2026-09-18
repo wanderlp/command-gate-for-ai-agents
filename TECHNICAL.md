@@ -76,12 +76,6 @@ things work differently from the binary in the sections above:
 
 ### Via package manager
 
-Manifest templates live under [`packaging/`](./packaging/README.md). Publishing
-them requires creating separate tap/bucket repos (Scoop convention:
-`<user>/scoop-bucket`; Homebrew convention: `<user>/homebrew-tap`) and pasting
-the manifests there with the placeholder SHA256 replaced. See
-`packaging/README.md` for the full flow. Once published, users install with:
-
 ```powershell
 # Scoop (Windows)
 scoop bucket add wanderlp https://github.com/wanderlp/scoop-bucket
@@ -89,10 +83,16 @@ scoop install cgate
 ```
 
 ```bash
-# Homebrew (macOS, Linux)
+# Homebrew (macOS, Linux) -- arm64 (Apple Silicon) only for now, no Intel build yet
 brew tap wanderlp/tap
 brew install cgate
 ```
+
+Both live in their own repos ([wanderlp/scoop-bucket](https://github.com/wanderlp/scoop-bucket),
+[wanderlp/homebrew-tap](https://github.com/wanderlp/homebrew-tap)) rather than
+here, so a future CLI tool can add its own manifest/formula to the same two
+repos instead of needing a new tap/bucket. Bumping either on a new `cgate`
+release is a manual step for now -- see [`packaging/README.md`](./packaging/README.md#maintenance).
 
 Winget is not yet supported — submit path requires PR to `microsoft/winget-pkgs`.
 
