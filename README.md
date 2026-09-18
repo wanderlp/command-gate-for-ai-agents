@@ -92,7 +92,19 @@ batch resolves, it doesn't vanish: press **`h`** in `cgate watch` to browse ever
 resolved batch, see the agent's stated `reason` for wanting the command, and view
 the full, untruncated result.
 
-Prefer SQL? The same data is still just a query away:
+Need it outside the TUI — for a compliance report, or just to grep offline?
+
+```bash
+cgate history export                          # full audit trail as CSV, to stdout
+cgate history export --format json -o audit.json
+cgate history export --limit 100               # only the 100 most recently resolved batches
+```
+
+Human-only: this isn't exposed to AI agents over MCP. An agent that proposed a
+batch can already poll `check_status(batch_id)` for it at any time, resolved or
+not, so there's no reason to hand it a browse of everyone else's history too.
+
+Prefer raw SQL? The same data is still just a query away:
 
 ```sql
 SELECT * FROM commands WHERE approved_by LIKE 'auto:%';

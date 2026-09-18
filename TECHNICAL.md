@@ -215,7 +215,7 @@ uv run python scripts/build-binary.py --name=cgate-helper --entry=src/cgate/help
 
 ```text
 src/cgate/
-├── cli/          # Top-level CLI: connections, mcp, update, watch
+├── cli/          # Top-level CLI: connections, history, mcp, update, watch
 ├── connections/  # Saved server connections + WinRM/SSH detection + keyring auth
 ├── core/         # Shared paths, primitives, and install/PATH registration
 ├── db/           # Local SQLite persistence (batches, commands, connections,

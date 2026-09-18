@@ -10,6 +10,7 @@ from rich.console import Console
 
 from cgate import __version__
 from cgate.cli.connections import connections_app
+from cgate.cli.history import history_app
 from cgate.cli.install import install_cmd, maybe_auto_install
 from cgate.cli.mcp import mcp_app
 from cgate.cli.uninstall import uninstall_cmd
@@ -23,6 +24,7 @@ app = typer.Typer(
     invoke_without_command=True,
 )
 app.add_typer(connections_app, name="connections")
+app.add_typer(history_app, name="history")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(update_app, name="update")
 app.add_typer(watch_app, name="watch")

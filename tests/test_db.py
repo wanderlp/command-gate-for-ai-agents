@@ -167,6 +167,21 @@ def test_list_resolved_respects_limit(tmp_path: Path) -> None:
     assert len(repo.list_resolved(limit=query_limit)) == query_limit
 
 
+def test_list_resolved_limit_none_returns_everything(tmp_path: Path) -> None:
+    """`cgate history export` wants the full audit trail by default, unlike
+    the History screen's bounded browse list -- SQLite's own `LIMIT -1`
+    convention makes "unlimited" a one-line special case, not a second
+    query shape."""
+    db = _db(tmp_path)
+    repo = BatchesRepo(db)
+    total_batches = 5
+    for i in range(total_batches):
+        batch = repo.create(title=f"b{i}", description=None, requested_by_agent=None)
+        repo.mark_resolved(batch.id, resolved_at=datetime(2025, 1, 1 + i, tzinfo=UTC))
+
+    assert len(repo.list_resolved(limit=None)) == total_batches
+
+
 def test_list_resolved_empty_when_nothing_resolved_yet(tmp_path: Path) -> None:
     db = _db(tmp_path)
     repo = BatchesRepo(db)
