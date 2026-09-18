@@ -3,16 +3,13 @@
     "description": "Middleware/CLI between AI agents and servers — IA proposes, human approves.",
     "homepage": "https://github.com/wanderlp/command-gate-for-ai-agents",
     "license": "MIT",
-    "url": "https://github.com/wanderlp/command-gate-for-ai-agents/releases/download/v0.1.5/cgate-windows-amd64.exe#cgate.exe",
+    "url": "https://github.com/wanderlp/command-gate-for-ai-agents/releases/download/v0.1.5/cgate-windows-amd64.exe#/cgate.exe",
     "hash": "PLACEHOLDER_UPDATE_AFTER_RELEASE",
     "bin": "cgate.exe",
     "checkver": {
         "github": "https://github.com/wanderlp/command-gate-for-ai-agents/"
     },
     "autoupdate": {
-        "url": "https://github.com/wanderlp/command-gate-for-ai-agents/releases/download/v$version/cgate-windows-amd64.exe#cgate.exe",
-        "hash": {
-            "url": "$url.sha256"
-        }
+        "url": "https://github.com/wanderlp/command-gate-for-ai-agents/releases/download/v$version/cgate-windows-amd64.exe#/cgate.exe"
     }
 }

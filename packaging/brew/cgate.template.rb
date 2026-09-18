@@ -4,10 +4,11 @@ class Cgate < Formula
   url "https://github.com/wanderlp/command-gate-for-ai-agents/releases/download/v0.1.5/cgate-macos-arm64"
   version "0.1.5"
   sha256 "PLACEHOLDER_UPDATE_AFTER_RELEASE"
+  license "MIT"
 
-  on_intel do
-    url "https://github.com/wanderlp/command-gate-for-ai-agents/releases/download/v0.1.5/cgate-macos-x86_64"
-  end
+  # arm64 (Apple Silicon) only -- release.yml's macOS runner only builds
+  # cgate-macos-arm64. Add an on_intel block back once an x86_64 asset exists;
+  # shipping one that 404s is worse than not offering Intel support at all.
 
   def install
     bin.install "cgate-macos-arm64" => "cgate"
