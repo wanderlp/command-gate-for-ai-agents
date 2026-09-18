@@ -22,7 +22,8 @@ from cgate.db.mode import AppModeNotSetError, Mode
 from cgate.watch.approval import (
     CommandDisappearedError,
     ConnectionNotFoundError,
-    approve_one,
+    execute_and_finalize,
+    mark_approved,
     reject_one,
 )
 from cgate.watch.command_detail_modal import CommandDetailModal
@@ -75,6 +76,8 @@ class QueueSidebar(Vertical):
     the queue and prioritize approving something further down.
     """
 
+    _rendered: tuple[tuple[BatchId, str, bool], ...] = ()
+
     @override
     def compose(self) -> ComposeResult:
         """Build the static title, a usage hint, and the batch list view."""
@@ -86,10 +89,21 @@ class QueueSidebar(Vertical):
         """Rebuild the list view, keeping the same row highlighted if it still exists.
 
         Runs on every poll tick (every `_POLL_INTERVAL_SECONDS`), not just
-        on user action, so it must not reset a human's cursor mid-navigation
-        -- restoring the highlighted batch by id (falling back to the first
-        row) keeps ↑/↓ usable even while the queue is refreshing live.
+        on user action. Two things follow from that:
+
+        - It must not reset a human's cursor mid-navigation -- restoring
+          the highlighted batch by id (falling back to the first row)
+          keeps ↑/↓ usable even while the queue is refreshing live.
+        - The overwhelmingly common tick is "nothing changed"; clearing
+          and rebuilding the list view anyway made every row visibly
+          flash every `_POLL_INTERVAL_SECONDS` for no reason. Skipping
+          the rebuild whenever the rendered snapshot is identical fixes
+          that without touching the polling itself.
         """
+        snapshot = tuple((batch.id, batch.title, batch.id == active_id) for batch in pending)
+        if snapshot == self._rendered:
+            return
+        self._rendered = snapshot
         list_view = self.query_one("#queue-list", ListView)
         highlighted = list_view.highlighted_child
         highlighted_id = highlighted.batch_id if isinstance(highlighted, BatchRow) else None
@@ -123,6 +137,8 @@ class ModeHeader(Horizontal):
 class ServersSidebar(Vertical):
     """Left-rail section listing every connection with its auto-approve flag."""
 
+    _rendered: tuple[tuple[str, bool], ...] = ()
+
     @override
     def compose(self) -> ComposeResult:
         """Build the static title and the servers list view."""
@@ -130,7 +146,15 @@ class ServersSidebar(Vertical):
         yield ListView(id="servers-list")
 
     def refresh_servers(self, rows: list[tuple[Connection, bool]]) -> None:
-        """Replace the list view contents with the current connections and flags."""
+        """Replace the list view contents with the current connections and flags.
+
+        Skips the rebuild when nothing changed since the last poll tick --
+        see `QueueSidebar.refresh_queue` for why that matters.
+        """
+        snapshot = tuple((connection.alias, auto_allowed) for connection, auto_allowed in rows)
+        if snapshot == self._rendered:
+            return
+        self._rendered = snapshot
         list_view = self.query_one("#servers-list", ListView)
         _ = list_view.clear()
         for connection, auto_allowed in rows:
@@ -481,12 +505,33 @@ class WatchApp(App[None]):
         _ = self.push_screen(HistoryModal(batches=self._batches, commands=self._commands))
 
     async def _approve(self, command_id: CommandId) -> None:
-        """Run one approval off the event loop thread, then refresh the view."""
+        """Mark approved, refresh (so the queue shows it's running), then execute.
+
+        Split into two off-thread calls instead of one so the human sees
+        the "approved, running" state (status glyph ◐, plus the
+        "running…" hint in `format_command_line`) the moment `y` is
+        pressed -- not just silence for however long the executor's
+        timeout allows, which reads as the dashboard having frozen.
+        """
         self._busy = True
         try:
             try:
                 _ = await asyncio.to_thread(
-                    approve_one,
+                    mark_approved,
+                    commands=self._commands,
+                    connections=self._connections,
+                    command_id=command_id,
+                )
+            except sqlite3.Error as exc:
+                self._render_db_error(exc)
+                return
+            except ConnectionNotFoundError as exc:
+                self._render_approval_error(exc)
+                return
+            self._refresh()
+            try:
+                _ = await asyncio.to_thread(
+                    execute_and_finalize,
                     db=self._db,
                     commands=self._commands,
                     connections=self._connections,
@@ -496,7 +541,7 @@ class WatchApp(App[None]):
             except sqlite3.Error as exc:
                 self._render_db_error(exc)
                 return
-            except (ConnectionNotFoundError, CommandDisappearedError) as exc:
+            except CommandDisappearedError as exc:
                 self._render_approval_error(exc)
                 return
         finally:

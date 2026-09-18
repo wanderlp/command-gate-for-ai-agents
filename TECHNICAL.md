@@ -224,6 +224,7 @@ src/cgate/
 ├── helper/       # Standalone cgate-helper.exe: Windows-only file swap for self-update
 ├── mcp_server/   # MCP server exposing propose_command / list_connections / check_status
 │                 # + auto_resolution.py (mode-aware decision helper)
+├── risk.py       # Heuristic high-blast-radius command detector (regex, not a guarantee)
 └── watch/        # Interactive approval queue (y/n/a/r/m/s/h controls)
                   # + mode_modal.py + server_settings_modal.py
                   # + history_modal.py + command_detail_modal.py + widgets.py

@@ -9,6 +9,7 @@ from cgate.db.mode import AppModeNotSetError, Mode
 from cgate.db.types import BatchId, CommandStatus
 from cgate.executor import selector
 from cgate.mcp_server.auto_resolution import resolve_auto_behavior
+from cgate.risk import find_risk
 
 if TYPE_CHECKING:
     from cgate.connections.store import ConnectionsRepo
@@ -33,6 +34,7 @@ class ProposeCommandResult(TypedDict):
     result: NotRequired[str | None]
     approved_by: NotRequired[str | None]
     reason: NotRequired[str | None]
+    risk_label: NotRequired[str | None]
 
 
 class ConnectionResult(TypedDict):
@@ -67,6 +69,7 @@ class CommandStatusResult(TypedDict):
     created_at: str
     resolved_at: str | None
     reason: str | None
+    risk_label: str | None
 
 
 class BatchStatusResult(TypedDict):
@@ -160,6 +163,7 @@ def _execute_auto(
             "result": current.result if current is not None else None,
             "approved_by": current.approved_by if current is not None else None,
             "reason": queued.reason,
+            "risk_label": queued.risk_label,
         }
     execution = selector.execute_command(connection, queued.command)
     status = CommandStatus.EXECUTED if execution.ok else CommandStatus.FAILED
@@ -190,6 +194,7 @@ def _execute_auto(
         "result": output,
         "approved_by": approver,
         "reason": queued.reason,
+        "risk_label": queued.risk_label,
     }
 
 
@@ -232,17 +237,20 @@ def propose_command(  # noqa: PLR0913 - boundary mirrors the specified MCP tool 
                 requested_by_agent=requested_by_agent,
             )
 
+    risk_label = find_risk(command, connection.server_type)
     queued = commands_repo.add(
         batch_id=batch.id,
         server_alias=connection.alias,
         server_type=connection.server_type,
         command=command,
         reason=reason,
+        risk_label=risk_label,
     )
     decision = resolve_auto_behavior(
         mode_repo=mode_repo,
         settings_repo=settings_repo,
         server_alias=connection.alias,
+        risk_label=risk_label,
     )
     if decision["action"] == "execute":
         return _execute_auto(
@@ -263,6 +271,7 @@ def propose_command(  # noqa: PLR0913 - boundary mirrors the specified MCP tool 
         "result": None,
         "approved_by": None,
         "reason": queued.reason,
+        "risk_label": queued.risk_label,
     }
 
 
@@ -335,6 +344,7 @@ def check_status(
                 "created_at": command.created_at.isoformat(),
                 "resolved_at": command.resolved_at.isoformat() if command.resolved_at else None,
                 "reason": command.reason,
+                "risk_label": command.risk_label,
             }
             for command in commands_repo.list_for_batch(typed_batch_id)
         ],

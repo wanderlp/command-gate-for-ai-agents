@@ -229,6 +229,45 @@ def test_propose_command_executes_in_auto_mode_when_server_opted_in(
     assert batch.resolved_at is not None
 
 
+def test_propose_command_queues_a_risky_command_even_in_auto_mode_when_opted_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A high-blast-radius command must never auto-run, even with both
+    switches (global AUTO + per-server opt-in) already flipped."""
+    db = _db(tmp_path)
+    _add_connection(db)
+    _ = AppModeRepo(db).set(mode=Mode.AUTO, updated_by="test")
+    _ = ServerSettingsRepo(db).set(alias="srv", auto_allowed=True, updated_by="test")
+
+    def fail_if_called(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("executor was called for a risky command")
+
+    monkeypatch.setattr(cgate.executor.selector, "execute_command", fail_if_called)
+    result = _propose(db, command="Remove-Item -Recurse -Force C:\\")
+    assert result["status"] == "pending"
+    assert result.get("effective_reason") == "risky_command"
+    assert result.get("risk_label") is not None
+
+
+def test_propose_command_marks_risk_label_none_for_a_safe_command(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    _add_connection(db)
+    result = _propose(db)
+    assert result.get("risk_label") is None
+
+
+def test_check_status_includes_risk_label_for_each_command(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    _add_connection(db)
+    result = _propose(db, command="Remove-Item -Recurse -Force C:\\")
+    status = check_status(
+        batches_repo=BatchesRepo(db),
+        commands_repo=CommandsRepo(db),
+        batch_id=str(result["batch_id"]),
+    )
+    assert status["commands"][0]["risk_label"] is not None
+
+
 def test_list_connections_returns_alias_and_server_type_for_each(tmp_path: Path) -> None:
     db = _db(tmp_path)
     _add_connection(db, "beta")

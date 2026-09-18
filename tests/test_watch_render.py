@@ -11,17 +11,19 @@ from cgate.watch.render import (
     format_command_detail,
     format_command_line,
     format_queue_summary,
+    risk_warning,
 )
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
 
-def _command(
+def _command(  # noqa: PLR0913 - one param per Command field under test, all optional
     *,
     status: CommandStatus = CommandStatus.PENDING,
     result: str | None = None,
     approved_by: str | None = None,
     reason: str | None = None,
+    risk_label: str | None = None,
     command: str = "uptime",
 ) -> Command:
     return Command(
@@ -37,6 +39,7 @@ def _command(
         created_at=_NOW,
         resolved_at=None,
         reason=reason,
+        risk_label=risk_label,
     )
 
 
@@ -103,6 +106,46 @@ def test_format_command_detail_includes_reason_and_approver() -> None:
     )
     assert "restart the crashed service" in detail
     assert "auto" in detail
+
+
+def test_risk_warning_empty_when_not_flagged() -> None:
+    assert risk_warning(None) == ""
+
+
+def test_risk_warning_shows_the_label() -> None:
+    warning = risk_warning("recursive force delete (rm -rf)")
+    assert "RISKY" in warning
+    assert "recursive force delete (rm -rf)" in warning
+
+
+def test_risk_warning_escapes_markup_in_the_label() -> None:
+    assert "\\[bold]" in risk_warning("[bold]evil[/bold]")
+
+
+def test_format_command_line_includes_risk_warning_regardless_of_status() -> None:
+    """Item 3: the human should see the flag in both PROPOSE and AUTO --
+    this only checks rendering, so it applies whatever status a risky
+    command happens to be in (PENDING here)."""
+    line = format_command_line(_command(risk_label="wipes/formats a disk"))
+    assert "RISKY" in line
+    assert "wipes/formats a disk" in line
+
+
+def test_format_command_line_omits_risk_warning_when_not_flagged() -> None:
+    assert "RISKY" not in format_command_line(_command(risk_label=None))
+
+
+def test_format_command_line_shows_running_hint_while_approved() -> None:
+    """Regression: approve_one used to run mark-approved + execute in one
+    shot with no chance for the TUI to show this state at all."""
+    line = format_command_line(_command(status=CommandStatus.APPROVED))
+    assert "running" in line.lower()
+
+
+def test_format_command_detail_includes_risk_warning() -> None:
+    detail = format_command_detail(_command(risk_label="formats a block device"))
+    assert "RISKY" in detail
+    assert "formats a block device" in detail
 
 
 def test_format_batch_header_escapes_markup_in_title() -> None:

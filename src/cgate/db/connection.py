@@ -67,17 +67,18 @@ def connect(database: Database) -> Generator[sqlite3.Connection, None, None]:
         conn.close()
 
 
-def _ensure_commands_reason_column(conn: sqlite3.Connection) -> None:
-    """Add ``commands.reason`` for databases created before it existed.
+def _ensure_column(conn: sqlite3.Connection, *, table: str, column: str, sql_type: str) -> None:
+    """Add one column to an existing table if it isn't already there.
 
     Unlike the ``CREATE TABLE IF NOT EXISTS`` statements everywhere else
     in this file, SQLite's ``ALTER TABLE ... ADD COLUMN`` has no
     ``IF NOT EXISTS`` form, so idempotency has to be a live
     ``PRAGMA table_info`` check instead of a fixed SQL string.
     """
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(commands)")}
-    if "reason" not in columns:
-        _ = conn.execute("ALTER TABLE commands ADD COLUMN reason TEXT")
+    # table/column/sql_type are always fixed literals from call sites below, never user input.
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        _ = conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
 
 
 def init_database(database: Database) -> None:
@@ -94,7 +95,8 @@ def init_database(database: Database) -> None:
     with connect(database) as conn:
         _ = conn.executescript(SCHEMA_SQL)
         _ = conn.executescript(_MODE_SETTINGS_SQL)
-        _ensure_commands_reason_column(conn)
+        _ensure_column(conn, table="commands", column="reason", sql_type="TEXT")
+        _ensure_column(conn, table="commands", column="risk_label", sql_type="TEXT")
         applied_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         _ = conn.execute(
             "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, ?)",

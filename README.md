@@ -72,6 +72,18 @@ servers that haven't been explicitly opted in. To actually run something
 unattended you must enable the mode **and** flip the per-server switch. Belt and
 suspenders, default-safe at every level.
 
+### A third switch: high-blast-radius commands never auto-run
+
+Even with both switches flipped, a command matching a known high-blast-radius
+pattern — a recursive force-delete, a raw disk write, deleting shadow copies or
+backups, disabling System Restore, and similar — always queues for a human. It
+shows a bold red `⚠ RISKY` warning in `cgate watch` (in **either** mode, so you
+notice it in PROPOSE too, not only when it changed what AUTO would have done),
+and the MCP response carries `effective_reason: "risky_command"` so the agent
+knows why. This is a regex-based heuristic, not a guarantee — it catches the
+common, obvious forms (see `src/cgate/risk.py`), not every possible obfuscation.
+Absence of the flag is not the same as "safe."
+
 ### The audit trail still works
 
 Every command a batch ever queued shows an `⚙ auto` or `👤 <username>` badge next

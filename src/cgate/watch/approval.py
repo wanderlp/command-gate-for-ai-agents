@@ -50,7 +50,41 @@ def _approve_by() -> str:
         return "unknown"
 
 
-def approve_one(  # noqa: PLR0913 - signature follows the required repository DI boundary
+def mark_approved(
+    *,
+    commands: CommandsRepo,
+    connections: ConnectionsRepo,
+    command_id: CommandId,
+) -> Command | None:
+    """Transition one pending command to APPROVED, without executing it.
+
+    The fast half of `approve_one`'s two-step split (paired with
+    `execute_and_finalize`): a plain DB write, done in milliseconds. The
+    watch TUI calls this first and refreshes before the slow half, so a
+    human sees the "approved, running" state (status glyph ◐) instead of
+    the queue looking frozen while the executor's timeout runs (up to a
+    minute by default).
+
+    Returns the command as-is (still PENDING) if `expected_status` loses
+    a race with another decision on it, or if it's already past PENDING
+    for any other reason -- mirroring `approve_one`'s prior behavior.
+    """
+    command = commands.get(command_id)
+    if command is None or command.status is not CommandStatus.PENDING:
+        return command
+    connection = connections.get(command.server_alias)
+    if connection is None:
+        raise ConnectionNotFoundError(command.server_alias)
+    approved = commands.update_status(
+        command_id,
+        status=CommandStatus.APPROVED,
+        approved_by=_approve_by(),
+        expected_status=CommandStatus.PENDING,
+    )
+    return commands.get(command_id) if approved else command
+
+
+def execute_and_finalize(  # noqa: PLR0913 - signature follows the required repository DI boundary
     *,
     db: Database,
     commands: CommandsRepo,
@@ -59,26 +93,21 @@ def approve_one(  # noqa: PLR0913 - signature follows the required repository DI
     command_id: CommandId,
     timeout: float = 60.0,
 ) -> tuple[Command | None, ExecutionResult | None]:
-    """Approve and synchronously execute one pending command."""
+    """Execute an already-APPROVED command and stamp EXECUTED/FAILED.
+
+    The slow half of `approve_one`'s two-step split: the network call
+    that can take up to `timeout`. No-ops (returns the command as-is, no
+    ExecutionResult) if it isn't APPROVED -- `mark_approved` lost a race,
+    or a human rejected it in the gap between the two calls.
+    """
     del db
     command = commands.get(command_id)
-    if command is None or command.status is not CommandStatus.PENDING:
+    if command is None or command.status is not CommandStatus.APPROVED:
         return command, None
     connection = connections.get(command.server_alias)
     if connection is None:
         raise ConnectionNotFoundError(command.server_alias)
-
-    approver = _approve_by()
-    approved = commands.update_status(
-        command_id,
-        status=CommandStatus.APPROVED,
-        approved_by=approver,
-        expected_status=CommandStatus.PENDING,
-    )
-    if not approved:
-        # Lost a race with another decision on this command since the
-        # PENDING check above -- report its current state, don't execute.
-        return commands.get(command_id), None
+    approver = command.approved_by or _approve_by()
     result = execute_command(connection, command.command, timeout=timeout)
     status = CommandStatus.EXECUTED if result.ok else CommandStatus.FAILED
     output = result.stdout
@@ -96,6 +125,32 @@ def approve_one(  # noqa: PLR0913 - signature follows the required repository DI
         raise CommandDisappearedError(command_id)
     _maybe_resolve_batch(batches, commands, updated.batch_id)
     return updated, result
+
+
+def approve_one(  # noqa: PLR0913 - signature follows the required repository DI boundary
+    *,
+    db: Database,
+    commands: CommandsRepo,
+    connections: ConnectionsRepo,
+    batches: BatchesRepo,
+    command_id: CommandId,
+    timeout: float = 60.0,
+) -> tuple[Command | None, ExecutionResult | None]:
+    """Approve and synchronously execute one pending command.
+
+    Composes `mark_approved` + `execute_and_finalize` in one call, for
+    callers that don't need the mid-flight refresh those two are split
+    for: `approve_remaining` and the MCP AUTO-mode auto-execution path.
+    """
+    _ = mark_approved(commands=commands, connections=connections, command_id=command_id)
+    return execute_and_finalize(
+        db=db,
+        commands=commands,
+        connections=connections,
+        batches=batches,
+        command_id=command_id,
+        timeout=timeout,
+    )
 
 
 def reject_one(

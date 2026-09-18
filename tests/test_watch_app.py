@@ -19,8 +19,9 @@ from cgate.db.mode import AppModeRepo
 from cgate.db.server_settings import ServerSettingsRepo
 from cgate.db.types import CommandStatus, ServerType
 from cgate.executor.base import ExecutionResult
-from cgate.watch.app import ActivePanel, WatchApp
+from cgate.watch.app import ActivePanel, QueueSidebar, ServersSidebar, WatchApp
 from cgate.watch.command_detail_modal import CommandDetailModal
+from cgate.watch.widgets import CommandRow
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -78,6 +79,74 @@ def test_idle_state_when_queue_is_empty(repos: Repos) -> None:
     assert "No pending batches" in header_text
 
 
+def test_risky_command_shows_a_warning_in_the_active_panel_in_propose_mode(repos: Repos) -> None:
+    """Item 3: the human should see the flag even in PROPOSE mode (the
+    default here), not only when it changes what AUTO mode would do."""
+    lot = repos.batches.create(title="lot", description=None, requested_by_agent=None)
+    _ = repos.commands.add(
+        batch_id=lot.id,
+        server_alias="linux-1",
+        server_type=ServerType.LINUX,
+        command="rm -rf /",
+        risk_label="recursive force delete (rm -rf)",
+    )
+
+    async def scenario() -> str:
+        async with _app(repos).run_test() as pilot:
+            await pilot.pause()
+            row = pilot.app.query_one(ActivePanel).query_one(CommandRow)
+            return str(row.content)
+
+    row_text = asyncio.run(scenario())
+    assert "RISKY" in row_text
+
+
+def test_queue_sidebar_skips_rebuild_when_nothing_changed(repos: Repos) -> None:
+    """The queue sidebar used to clear and rebuild its list view on every
+    poll tick regardless of whether anything changed -- visible as every
+    row flashing every `_POLL_INTERVAL_SECONDS` for no reason."""
+    lot = repos.batches.create(title="lot", description=None, requested_by_agent=None)
+    _ = repos.commands.add(
+        batch_id=lot.id, server_alias="linux-1", server_type=ServerType.LINUX, command="uptime"
+    )
+
+    async def scenario() -> int:
+        async with _app(repos).run_test() as pilot:
+            await pilot.pause()
+            sidebar = pilot.app.query_one(QueueSidebar)
+            list_view = sidebar.query_one("#queue-list", ListView)
+            with patch.object(list_view, "clear", wraps=list_view.clear) as clear_spy:
+                pilot.app._refresh()  # noqa: SLF001 -- same pending data as on_mount already rendered
+                await pilot.pause()
+                return clear_spy.call_count
+
+    call_count = asyncio.run(scenario())
+    assert call_count == 0
+
+
+def test_servers_sidebar_skips_rebuild_when_nothing_changed(repos: Repos) -> None:
+    _ = repos.connections.add(
+        alias="linux-1",
+        hostname="linux.example",
+        server_type=ServerType.LINUX,
+        detection_ssh=True,
+        detection_winrm=False,
+    )
+
+    async def scenario() -> int:
+        async with _app(repos).run_test() as pilot:
+            await pilot.pause()
+            sidebar = pilot.app.query_one(ServersSidebar)
+            list_view = sidebar.query_one("#servers-list", ListView)
+            with patch.object(list_view, "clear", wraps=list_view.clear) as clear_spy:
+                pilot.app._refresh()  # noqa: SLF001 -- same connections as on_mount already rendered
+                await pilot.pause()
+                return clear_spy.call_count
+
+    call_count = asyncio.run(scenario())
+    assert call_count == 0
+
+
 def test_approve_one_executes_and_advances(repos: Repos) -> None:
     lot = repos.batches.create(title="lot", description=None, requested_by_agent=None)
     first = repos.commands.add(
@@ -103,6 +172,53 @@ def test_approve_one_executes_and_advances(repos: Repos) -> None:
     updated = repos.commands.get(first.id)
     assert updated is not None
     assert updated.status is CommandStatus.EXECUTED
+
+
+def test_approve_one_refreshes_between_mark_approved_and_execution(repos: Repos) -> None:
+    """Regression: approve_one used to mark-approved + execute in one
+    worker-thread call with no chance for the TUI to refresh in between,
+    so pressing `y` on a slow command looked exactly like a frozen
+    dashboard for however long the executor's timeout allowed. `_approve`
+    must now refresh right after marking approved, before the (possibly
+    slow) execution call."""
+    lot = repos.batches.create(title="lot", description=None, requested_by_agent=None)
+    _ = repos.commands.add(
+        batch_id=lot.id, server_alias="linux-1", server_type=ServerType.LINUX, command="uptime"
+    )
+    _ = repos.connections.add(
+        alias="linux-1",
+        hostname="linux.example",
+        server_type=ServerType.LINUX,
+        detection_ssh=True,
+        detection_winrm=False,
+    )
+    calls: list[str] = []
+
+    def fake_mark_approved(**_kwargs: object) -> None:
+        calls.append("mark_approved")
+
+    def fake_execute_and_finalize(**_kwargs: object) -> tuple[None, None]:
+        calls.append("execute_and_finalize")
+        return None, None
+
+    async def scenario() -> None:
+        async with _app(repos).run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("cgate.watch.app.mark_approved", side_effect=fake_mark_approved),
+                patch(
+                    "cgate.watch.app.execute_and_finalize", side_effect=fake_execute_and_finalize
+                ),
+                patch.object(
+                    pilot.app, "_refresh", side_effect=lambda: calls.append("refresh")
+                ),
+            ):
+                await pilot.press("y")
+                await pilot.pause()
+
+    asyncio.run(scenario())
+
+    assert calls == ["mark_approved", "refresh", "execute_and_finalize", "refresh"]
 
 
 def test_reject_all_resolves_the_active_batch(repos: Repos) -> None:
@@ -382,7 +498,7 @@ def test_approve_action_swallows_db_error_from_approve_one(repos: Repos) -> None
         async with _app(repos).run_test() as pilot:
             await pilot.pause()
             with patch(
-                "cgate.watch.app.approve_one",
+                "cgate.watch.app.mark_approved",
                 side_effect=sqlite3.OperationalError("database is locked"),
             ):
                 await pilot.press("y")
@@ -397,7 +513,7 @@ def test_approve_action_swallows_db_error_from_approve_one(repos: Repos) -> None
 
 
 def test_approve_action_swallows_connection_not_found_from_approve_one(repos: Repos) -> None:
-    """A connection removed after its command was queued makes approve_one
+    """A connection removed after its command was queued makes mark_approved
     raise ConnectionNotFoundError -- not a sqlite3.Error. Uncaught, that
     would crash the whole dashboard over one bad command instead of just
     that one approval."""
@@ -408,8 +524,8 @@ def test_approve_action_swallows_connection_not_found_from_approve_one(repos: Re
         server_type=ServerType.LINUX,
         command="uptime",
     )
-    # No matching connection is registered, so approve_one raises
-    # ConnectionNotFoundError instead of executing anything.
+    # No matching connection is registered, so mark_approved raises
+    # ConnectionNotFoundError before anything reaches the executor.
 
     async def scenario() -> tuple[str, bool]:
         async with _app(repos).run_test() as pilot:

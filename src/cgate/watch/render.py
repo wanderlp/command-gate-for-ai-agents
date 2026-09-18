@@ -50,6 +50,18 @@ def approver_badge(approved_by: str | None) -> str:
     return f" [green]👤 {escape_markup(approved_by)}[/green]"
 
 
+def risk_warning(risk_label: str | None) -> str:
+    """Render the high-blast-radius warning line, or an empty string when unflagged.
+
+    Shown regardless of PROPOSE/AUTO mode -- a human scanning the queue
+    should see it either way, not just when it happened to be the reason
+    AUTO mode queued the command instead of running it.
+    """
+    if not risk_label:
+        return ""
+    return f"[bold red]⚠ RISKY:[/bold red] [red]{escape_markup(risk_label)}[/red]"
+
+
 def format_batch_header(batch: Batch) -> str:
     """Render a bold cyan title with an optional grey italic description below it."""
     lines = [f"[bold cyan]{escape_markup(batch.title)}[/bold cyan]"]
@@ -94,9 +106,13 @@ def format_command_line(command: Command) -> str:
         f"[dim]{escape_markup(command.server_alias)}[/dim]"
         f"{approver_badge(command.approved_by)}"
     )
+    if command.risk_label:
+        line += f"\n    {risk_warning(command.risk_label)}"
     if command.reason:
         line += f"\n    [dim italic]↳ {escape_markup(command.reason)}[/dim italic]"
-    if command.status is CommandStatus.EXECUTED and command.result:
+    if command.status is CommandStatus.APPROVED:
+        line += "\n    [dim]⏳ running…[/dim]"
+    elif command.status is CommandStatus.EXECUTED and command.result:
         line += f"\n    [dim]{escape_markup(_result_snippet(command.result))}[/dim]"
     elif command.status is CommandStatus.FAILED and command.result:
         line += f"\n    [red dim]{escape_markup(_result_snippet(command.result))}[/red dim]"
@@ -117,6 +133,8 @@ def format_command_detail(command: Command) -> str:
         f"{status_glyph(command.status)} [bold]{escape_markup(command.command)}[/bold]",
         server_line,
     ]
+    if command.risk_label:
+        lines.append(risk_warning(command.risk_label))
     if command.reason:
         lines.append(f"\n[italic]Reason:[/italic] {escape_markup(command.reason)}")
     if command.approved_by:

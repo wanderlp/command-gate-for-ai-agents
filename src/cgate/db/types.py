@@ -62,6 +62,7 @@ class Command:
     created_at: datetime
     resolved_at: datetime | None
     reason: str | None
+    risk_label: str | None
 
 
 @dataclass(frozen=True, slots=True)

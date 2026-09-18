@@ -16,7 +16,8 @@ class BehaviorDecision(TypedDict):
     action: Literal["queue", "execute"]
     mode: str
     server_auto_allowed: bool
-    reason: Literal["global_propose", "server_not_opted_in", "both_allowed"]
+    reason: Literal["global_propose", "server_not_opted_in", "both_allowed", "risky_command"]
+    risk_label: str | None
 
 
 def resolve_auto_behavior(
@@ -24,12 +25,20 @@ def resolve_auto_behavior(
     mode_repo: AppModeRepo,
     settings_repo: ServerSettingsRepo,
     server_alias: str,
+    risk_label: str | None,
 ) -> BehaviorDecision:
     """Execute only when the global mode is AUTO and the server has opted in.
 
     An unset global mode (AppModeNotSetError) behaves as PROPOSE, and an
     alias without an explicit server_settings row behaves as not opted in:
     auto-execution requires both sides to be explicit.
+
+    ``risk_label`` (from ``cgate.risk.find_risk``, computed by the caller)
+    overrides ``both_allowed`` -- a command matching a known high-blast-
+    radius pattern always queues for a human, even with AUTO mode on and
+    the server opted in. It's carried through regardless of the decision
+    reason so the caller (and the human reviewing the queue) always knows
+    whether this command was flagged, not just when it changed the outcome.
     """
     try:
         mode = mode_repo.get().mode
@@ -42,7 +51,8 @@ def resolve_auto_behavior(
                 "action": "queue",
                 "mode": mode.value,
                 "server_auto_allowed": auto_allowed,
-                "reason": "global_propose",
+                "reason": "risky_command" if risk_label is not None else "global_propose",
+                "risk_label": risk_label,
             }
         case Mode.AUTO:
             if not auto_allowed:
@@ -51,10 +61,20 @@ def resolve_auto_behavior(
                     "mode": mode.value,
                     "server_auto_allowed": auto_allowed,
                     "reason": "server_not_opted_in",
+                    "risk_label": risk_label,
+                }
+            if risk_label is not None:
+                return {
+                    "action": "queue",
+                    "mode": mode.value,
+                    "server_auto_allowed": auto_allowed,
+                    "reason": "risky_command",
+                    "risk_label": risk_label,
                 }
             return {
                 "action": "execute",
                 "mode": mode.value,
                 "server_auto_allowed": auto_allowed,
                 "reason": "both_allowed",
+                "risk_label": None,
             }

@@ -84,8 +84,14 @@ def _tools() -> list[types.Tool]:
                 "the target server has opted into auto-execution, it runs immediately "
                 "and the response includes the result. The response always carries "
                 "`mode`, `server_auto_allowed`, and `effective_reason` so you can tell "
-                "which path it took. batch_title is required; batch_description is "
-                "optional. If batch_id is omitted, a new batch is created."
+                "which path it took. A command matching a known high-blast-radius "
+                "pattern (e.g. a recursive force-delete, a raw disk write, deleting "
+                "shadow copies/backups) always queues for a human regardless of AUTO "
+                "mode -- `effective_reason` comes back as `risky_command` and "
+                "`risk_label` names what was matched; this is a heuristic, not a "
+                "guarantee, so don't rely on its absence to mean a command is safe. "
+                "batch_title is required; batch_description is optional. If batch_id "
+                "is omitted, a new batch is created."
             ),
             input_schema={
                 "type": "object",

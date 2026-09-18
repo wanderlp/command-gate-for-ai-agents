@@ -13,7 +13,15 @@ from cgate.db.commands import CommandsRepo
 from cgate.db.connection import Database, connect, init_database
 from cgate.db.types import Batch, BatchId, Command, CommandStatus, ServerType
 from cgate.executor.base import ErrorKind, ExecutionResult
-from cgate.watch.approval import approve_one, approve_remaining, reject_one, reject_remaining
+from cgate.watch.approval import (
+    ConnectionNotFoundError,
+    approve_one,
+    approve_remaining,
+    execute_and_finalize,
+    mark_approved,
+    reject_one,
+    reject_remaining,
+)
 from cgate.watch.queue import (
     active_batch,
     count_pending_commands,
@@ -282,6 +290,71 @@ def test_heal_queue_resolves_batch_after_failing_its_orphaned_command(repos: Rep
 
     assert repos.batches.get(lot.id).resolved_at is not None
     assert repos.commands.get(cmd.id).status is CommandStatus.FAILED
+
+
+def test_mark_approved_transitions_pending_to_approved_without_executing(repos: Repos) -> None:
+    """The fast half of approve_one's split: a plain DB write, no network
+    call -- lets the TUI refresh and show "approved, running" before the
+    slow half instead of going silent for the whole executor timeout."""
+    _add_connection(repos)
+    cmd = _command(repos)
+
+    with patch("cgate.watch.approval.execute_command") as execute:
+        updated = mark_approved(
+            commands=repos.commands, connections=repos.connections, command_id=cmd.id
+        )
+
+    assert updated is not None
+    assert updated.status is CommandStatus.APPROVED
+    execute.assert_not_called()
+
+
+def test_mark_approved_raises_when_connection_missing(repos: Repos) -> None:
+    cmd = _command(repos)  # no connection registered for "linux-1"
+
+    with pytest.raises(ConnectionNotFoundError):
+        mark_approved(commands=repos.commands, connections=repos.connections, command_id=cmd.id)
+
+
+def test_execute_and_finalize_runs_the_executor_and_marks_executed(repos: Repos) -> None:
+    _add_connection(repos)
+    cmd = _command(repos)
+    _ = mark_approved(commands=repos.commands, connections=repos.connections, command_id=cmd.id)
+
+    with patch("cgate.watch.approval.execute_command", return_value=_success()) as execute:
+        updated, result = execute_and_finalize(
+            db=repos.db,
+            commands=repos.commands,
+            connections=repos.connections,
+            batches=repos.batches,
+            command_id=cmd.id,
+        )
+
+    assert updated is not None
+    assert updated.status is CommandStatus.EXECUTED
+    assert result == _success()
+    execute.assert_called_once()
+
+
+def test_execute_and_finalize_noops_when_not_approved(repos: Repos) -> None:
+    """A command still PENDING (mark_approved was never called, or lost
+    a race) must not be executed."""
+    _add_connection(repos)
+    cmd = _command(repos)
+
+    with patch("cgate.watch.approval.execute_command") as execute:
+        updated, result = execute_and_finalize(
+            db=repos.db,
+            commands=repos.commands,
+            connections=repos.connections,
+            batches=repos.batches,
+            command_id=cmd.id,
+        )
+
+    assert updated is not None
+    assert updated.status is CommandStatus.PENDING
+    assert result is None
+    execute.assert_not_called()
 
 
 def test_approve_one_marks_executed_and_calls_executor(repos: Repos) -> None:
